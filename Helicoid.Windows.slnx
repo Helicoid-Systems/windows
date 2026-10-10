@@ -1,9 +1,11 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj" />
     <Project Path="src/Helicoid.Computer/Helicoid.Computer.csproj" />
     <Project Path="src/Helicoid.ConsoleProbe/Helicoid.ConsoleProbe.csproj" />
     <Project Path="src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj" />
     <Project Path="src/Helicoid.Domain/Helicoid.Domain.csproj" />
     <Project Path="src/Helicoid.Manager/Helicoid.Manager.csproj" />
+    <Project Path="src/Helicoid.WindowsPlatform/Helicoid.WindowsPlatform.csproj" />
   </Folder>
 </Solution>

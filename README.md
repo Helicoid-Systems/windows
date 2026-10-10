@@ -23,9 +23,26 @@ Development bundle defaults (CI-verified): `Platform=x64`, `RuntimeIdentifier=wi
 
 ### Domain and tests (macOS and Windows)
 
+Portable fixture proof — wire parsing, fencing algebra, timing validation.
+Runs on any OS with the .NET 10 SDK:
+
 ```bash
-dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj
+dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
 ```
+
+Last local run (macOS, 10 October 2026): **292 passed, 0 failed**.
+
+### Worker / supervisor integration tests
+
+```powershell
+dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release --nologo
+```
+
+Portable pure-protocol facts run everywhere. Windows-native facts
+(`[WindowsFact]` — named pipes, Job Objects, kernel PID/session/SID identity,
+process launch) report a real xUnit **skip** on non-Windows and are mandatory
+on Windows CI. Last local run (macOS): **10 passed, 30 skipped** — the 30
+skips are not native proof.
 
 ### Full Windows apps (Windows 11 x64)
 
@@ -33,7 +50,21 @@ dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj
 dotnet restore Helicoid.Windows.slnx
 dotnet build Helicoid.Windows.slnx -c Release
 dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
+dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release --nologo
 ```
+
+Native Windows CI (`.github/workflows/windows.yml`) also publishes a
+reproducible metadata-only CaptureWorker bundle (`SHA256SUMS` manifest) and
+runs worker IPC admission checks (missing/malformed fencing env → exit 1).
+
+### Development evidence status
+
+| Claim | Status |
+| --- | --- |
+| Domain fixture suite | **Verified locally** (292 tests) |
+| Portable integration facts | **Verified locally** (10 tests) |
+| Windows-native IPC / supervisor / Job Object paths | **Pending Windows CI** — not run on macOS |
+| Capture / input / network | **Closed** — no admitted ABI yet |
 
 ## Development server mode
 

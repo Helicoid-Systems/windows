@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Helicoid.ConsoleProbe;
-using Helicoid.ConsoleProbe.Native;
+using Helicoid.WindowsPlatform.Native;
 using Helicoid.Domain.PhysicalConsole;
 
 const string ToolName = "Helicoid.ConsoleProbe";

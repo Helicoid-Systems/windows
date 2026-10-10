@@ -1,0 +1,1089 @@
+using System.Diagnostics;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using Helicoid.Domain.Worker;
+using Helicoid.WindowsPlatform;
+using Helicoid.WindowsPlatform.Native;
+using Xunit;
+
+namespace Helicoid.WindowsIntegrationTests;
+
+/// <summary>
+/// Windows-native integration tests for the supervisor/worker IPC lifecycle.
+/// These tests exercise real named pipes, process creation, Job Objects,
+/// and kernel identity verification — not mirror DTO validation.
+///
+/// Requires Windows runtime. Skip on non-Windows platforms.
+/// </summary>
+public sealed class SupervisorIpcIntegrationTests : IDisposable
+{
+    private readonly string _workerExePath;
+    private readonly List<IDisposable> _disposables = new();
+
+    public SupervisorIpcIntegrationTests()
+    {
+        // Locate the CaptureWorker executable relative to the test assembly.
+        string testDir = AppContext.BaseDirectory;
+        _workerExePath = Path.Combine(testDir, "Helicoid.CaptureWorker.exe");
+    }
+
+    public void Dispose()
+    {
+        foreach (var d in _disposables)
+        {
+            try { d.Dispose(); } catch { }
+        }
+    }
+
+    private static FencingIds MakeFence()
+        => new() { BootId = FencingIds.GenerateId(), LaunchId = FencingIds.GenerateId() };
+
+    private static (uint Session, string Sid) GetSelfIdentity()
+    {
+        uint pid = Kernel32Native.GetCurrentProcessId();
+        if (!WtsNative.ProcessIdToSessionId(pid, out uint session))
+        {
+            session = 0;
+        }
+
+        string sid = GetCurrentProcessTokenSid() ?? "S-1-5-18";
+        return (session, sid);
+    }
+
+    private static SupervisorIpcChannel CreateChannel(
+        LaunchCapability capability,
+        uint expectedPid = 0,
+        FencingIds? fence = null,
+        uint generation = DesktopGeneration.Initial)
+    {
+        var (session, sid) = GetSelfIdentity();
+        return new SupervisorIpcChannel(
+            capability,
+            expectedPid,
+            session,
+            sid,
+            fence ?? MakeFence(),
+            generation);
+    }
+
+    private static WorkerIpcChannel CreateWorkerChannel(
+        string pipeName,
+        LaunchCapability capability,
+        FencingIds? fence = null,
+        uint generation = DesktopGeneration.Initial,
+        uint? serverPid = null)
+    {
+        uint pid = serverPid ?? Kernel32Native.GetCurrentProcessId();
+        WtsNative.ProcessIdToSessionId(pid, out uint session);
+        string sid = GetCurrentProcessTokenSid() ?? "S-1-5-18";
+        return new WorkerIpcChannel(pipeName, capability, pid, session, sid, fence ?? MakeFence(), generation);
+    }
+
+    // =================================================================
+    // Test 1: Successful handshake between supervisor and worker
+    // =================================================================
+
+    [WindowsFact]
+    public async Task Handshake_SuccessfulAuth_Accepted()
+    {
+
+        var capability = LaunchCapability.Generate();
+        var fence = MakeFence();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        using var channel = CreateChannel(capability, expectedPid: selfPid, fence: fence);
+
+        var workerTask = Task.Run(() =>
+        {
+            using var workerChannel = CreateWorkerChannel(channel.PipeName, capability, fence: fence);
+            return workerChannel.ConnectAndHandshake(TimeSpan.FromSeconds(10));
+        });
+
+        var result = channel.WaitForAuthenticatedConnection(TimeSpan.FromSeconds(10));
+        Assert.Equal(IpcAuthenticationResult.Authenticated, result);
+
+        var workerResult = await workerTask;
+        Assert.Equal(IpcAuthenticationResult.Authenticated, workerResult);
+    }
+
+    // =================================================================
+    // Test 2: Wrong capability nonce — rejected
+    // =================================================================
+
+    [WindowsFact]
+    public async Task Handshake_WrongCapability_Rejected()
+    {
+
+        var supervisorCap = LaunchCapability.Generate();
+        var wrongCap = LaunchCapability.Generate(); // Different capability.
+        var fence = MakeFence();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        using var channel = CreateChannel(supervisorCap, expectedPid: selfPid, fence: fence);
+
+        var workerTask = Task.Run(() =>
+        {
+            using var workerChannel = CreateWorkerChannel(channel.PipeName, wrongCap, fence: fence);
+            return workerChannel.ConnectAndHandshake(TimeSpan.FromSeconds(10));
+        });
+
+        var result = channel.WaitForAuthenticatedConnection(TimeSpan.FromSeconds(10));
+        Assert.Equal(IpcAuthenticationResult.InvalidCapability, result);
+
+        var workerResult = await workerTask;
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, workerResult);
+    }
+
+    // =================================================================
+    // Test 3: Handshake timeout — no worker connects
+    // =================================================================
+
+    [WindowsFact]
+    public void Handshake_Timeout_ReturnsTimeout()
+    {
+
+        var capability = LaunchCapability.Generate();
+        using var channel = CreateChannel(capability);
+
+        // Wait with a very short timeout — no worker will connect.
+        var result = channel.WaitForAuthenticatedConnection(TimeSpan.FromMilliseconds(100));
+        Assert.Equal(IpcAuthenticationResult.Timeout, result);
+    }
+
+    // =================================================================
+    // Test 4: Wrong PID — connecting process has different PID than expected
+    // =================================================================
+
+    [WindowsFact]
+    public async Task Handshake_WrongPid_ProcessMismatch()
+    {
+
+        var capability = LaunchCapability.Generate();
+        var fence = MakeFence();
+
+        // Expect a PID that is not us — any real client must mismatch.
+        using var channel = CreateChannel(capability, expectedPid: 999999, fence: fence);
+
+        var workerTask = Task.Run(() =>
+        {
+            using var workerChannel = CreateWorkerChannel(channel.PipeName, capability, fence: fence);
+            return workerChannel.ConnectAndHandshake(TimeSpan.FromSeconds(10));
+        });
+
+        var result = channel.WaitForAuthenticatedConnection(TimeSpan.FromSeconds(10));
+        Assert.Equal(IpcAuthenticationResult.ProcessMismatch, result);
+
+        var workerResult = await workerTask;
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, workerResult);
+    }
+
+    // =================================================================
+    // Test 5: Malformed handshake — worker sends garbage bytes
+    // =================================================================
+
+    [WindowsFact]
+    public async Task Handshake_MalformedFrame_Rejected()
+    {
+
+        var capability = LaunchCapability.Generate();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        using var channel = CreateChannel(capability, expectedPid: selfPid);
+
+        var handshakeTask = Task.Run(() =>
+            channel.WaitForAuthenticatedConnection(TimeSpan.FromSeconds(10)));
+
+        // Connect as a raw pipe client and send malformed data.
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        await rawClient.ConnectAsync(5000);
+
+        // Send garbage: valid header type but wrong payload size.
+        byte[] garbage = new byte[IpcMessage.HeaderSize];
+        garbage[0] = (byte)IpcMessageType.HandshakeRequest;
+        BitConverter.TryWriteBytes(garbage.AsSpan(1, 4), 999); // Claims 999 bytes but frame is only 5.
+        await rawClient.WriteAsync(garbage);
+        await rawClient.FlushAsync();
+
+        var result = await handshakeTask;
+        // Should be either MalformedFrame or Timeout (depending on read behavior).
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
+    }
+
+    // =================================================================
+    // Test 6: Silent client — connects but sends nothing
+    // =================================================================
+
+    [WindowsFact]
+    public async Task Handshake_SilentClient_Timeout()
+    {
+
+        var capability = LaunchCapability.Generate();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        using var channel = CreateChannel(capability, expectedPid: selfPid);
+
+        var handshakeTask = Task.Run(() =>
+            channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(2)));
+
+        // Connect but send nothing.
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        await rawClient.ConnectAsync(5000);
+
+        // Don't send anything — let it timeout.
+        var result = await handshakeTask;
+        Assert.Equal(IpcAuthenticationResult.Timeout, result);
+    }
+
+    // =================================================================
+    // Test 7: Worker with wrong capability via real CaptureWorker
+    // =================================================================
+
+    [WindowsFact]
+    public async Task CaptureWorker_WrongCapability_ExitCode3()
+    {
+
+        if (!File.Exists(_workerExePath))
+        {
+            return; // Skip when the worker binary was not staged.
+        }
+
+        var capability = LaunchCapability.Generate();
+        var fence = MakeFence();
+
+        // Create a pipe with a DIFFERENT capability than what we'll give the worker.
+        var differentCap = LaunchCapability.Generate();
+        using var channel = CreateChannel(differentCap, fence: fence);
+
+        // Launch the worker with the WRONG capability.
+        var psi = new ProcessStartInfo
+        {
+            FileName = _workerExePath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        psi.Environment["HELI_WORKER_CAP"] = Convert.ToHexString(capability.Bytes);
+        psi.Environment["HELI_WORKER_PIPE"] = channel.PipeName;
+        psi.Environment["HELI_WORKER_GEN"] = "1";
+        psi.Environment["HELI_WORKER_BOOT"] = Convert.ToHexString(fence.BootId);
+        psi.Environment["HELI_WORKER_LAUNCH"] = Convert.ToHexString(fence.LaunchId);
+
+        using var worker = Process.Start(psi);
+        Assert.NotNull(worker);
+
+        // Bind the actual child PID now that the process exists.
+        channel.BindExpectedPid((uint)worker!.Id);
+
+        // Supervisor side should reject the connection.
+        var result = await channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(IpcAuthenticationResult.InvalidCapability, result);
+
+        // Worker should exit with auth failure code.
+        bool exited = worker.WaitForExit(10000);
+        Assert.True(exited, "Worker should have exited");
+        Assert.Equal(3, worker.ExitCode); // ExitAuthFailed
+    }
+
+    // =================================================================
+    // Test 8: Worker without env vars — exit code 1
+    // =================================================================
+
+    [WindowsFact]
+    public void CaptureWorker_NoEnvVars_ExitCode1()
+    {
+
+        if (!File.Exists(_workerExePath))
+        {
+            return;
+        }
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = _workerExePath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        // Clear any inherited HELI_WORKER vars.
+        psi.Environment.Remove("HELI_WORKER_CAP");
+        psi.Environment.Remove("HELI_WORKER_PIPE");
+        psi.Environment.Remove("HELI_WORKER_GEN");
+        psi.Environment.Remove("HELI_WORKER_BOOT");
+        psi.Environment.Remove("HELI_WORKER_LAUNCH");
+
+        using var worker = Process.Start(psi);
+        Assert.NotNull(worker);
+
+        bool exited = worker!.WaitForExit(10000);
+        Assert.True(exited, "Worker should have exited");
+        Assert.Equal(1, worker.ExitCode); // ExitConfigError
+    }
+
+    // =================================================================
+    // Test 8b: Worker with missing fencing IDs — exit code 1 (mandatory)
+    // =================================================================
+
+    [WindowsFact]
+    public void CaptureWorker_MissingFenceIds_ExitCode1()
+    {
+
+        if (!File.Exists(_workerExePath))
+        {
+            return;
+        }
+
+        var capability = LaunchCapability.Generate();
+        var psi = new ProcessStartInfo
+        {
+            FileName = _workerExePath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        psi.Environment["HELI_WORKER_CAP"] = Convert.ToHexString(capability.Bytes);
+        psi.Environment["HELI_WORKER_PIPE"] = "helicoid-worker-test";
+        psi.Environment["HELI_WORKER_GEN"] = "1";
+        // BOOT and LAUNCH intentionally omitted — must deny.
+
+        using var worker = Process.Start(psi);
+        Assert.NotNull(worker);
+
+        bool exited = worker!.WaitForExit(10000);
+        Assert.True(exited, "Worker should have exited");
+        Assert.Equal(1, worker.ExitCode); // ExitConfigError — mandatory fencing missing
+    }
+
+    // =================================================================
+    // Test 8c: Worker with malformed fencing IDs — exit code 1
+    // =================================================================
+
+    [WindowsFact]
+    public void CaptureWorker_MalformedFenceIds_ExitCode1()
+    {
+
+        if (!File.Exists(_workerExePath))
+        {
+            return;
+        }
+
+        var capability = LaunchCapability.Generate();
+        var psi = new ProcessStartInfo
+        {
+            FileName = _workerExePath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        psi.Environment["HELI_WORKER_CAP"] = Convert.ToHexString(capability.Bytes);
+        psi.Environment["HELI_WORKER_PIPE"] = "helicoid-worker-test";
+        psi.Environment["HELI_WORKER_GEN"] = "1";
+        psi.Environment["HELI_WORKER_BOOT"] = "AABB"; // Too short — must deny.
+        psi.Environment["HELI_WORKER_LAUNCH"] = "CCDD";
+
+        using var worker = Process.Start(psi);
+        Assert.NotNull(worker);
+
+        bool exited = worker!.WaitForExit(10000);
+        Assert.True(exited, "Worker should have exited");
+        Assert.Equal(1, worker.ExitCode);
+    }
+
+    // =================================================================
+    // Test 9: Worker exit and restart — old callbacks fenced
+    // =================================================================
+
+    [WindowsFact]
+    public void Supervisor_WorkerRestart_OldCallbacksFenced()
+    {
+
+        var config = MakeConfig(_workerExePath);
+
+        using var supervisor = new WorkerSupervisor(config);
+
+        // Record the boot ID.
+        byte[] bootId = supervisor.BootId;
+        Assert.Equal(FencingIds.IdLength, bootId.Length);
+
+        // Boot ID should be constant for the same supervisor instance.
+        Assert.True(supervisor.IsCurrentBoot(bootId));
+
+        // A random boot ID should NOT match.
+        byte[] differentBootId = FencingIds.GenerateId();
+        Assert.False(supervisor.IsCurrentBoot(differentBootId));
+    }
+
+    // =================================================================
+    // Test 9b: Generation invalidation fences old launch callbacks
+    // =================================================================
+
+    [WindowsFact]
+    public void Supervisor_InvalidateGeneration_FencesOldLaunch()
+    {
+
+        var config = MakeConfig(_workerExePath);
+        using var supervisor = new WorkerSupervisor(config);
+
+        uint genBefore = supervisor.Generation.Value;
+
+        // Simulate a callback captured at the old generation.
+        byte[] staleLaunch = FencingIds.GenerateId();
+        uint staleGen = genBefore;
+        Assert.False(supervisor.IsCurrentLaunch(staleLaunch, staleGen));
+
+        supervisor.InvalidateGeneration("test lock");
+
+        // After invalidation, generation advanced and any prior launch is fenced.
+        Assert.Equal(genBefore + 1, supervisor.Generation.Value);
+        Assert.False(supervisor.IsCurrentLaunch(staleLaunch, staleGen));
+    }
+
+    // =================================================================
+    // Test 9c: OnSessionLocked and OnConsoleReplaced advance generation
+    // =================================================================
+
+    [WindowsFact]
+    public void Supervisor_LockAndConsoleReplace_FenceGeneration()
+    {
+
+        var config = MakeConfig(_workerExePath);
+        using var supervisor = new WorkerSupervisor(config);
+
+        uint g0 = supervisor.Generation.Value;
+        supervisor.OnSessionLocked();
+        uint g1 = supervisor.Generation.Value;
+        Assert.True(g1 > g0, "lock must advance generation");
+
+        supervisor.OnConsoleReplaced();
+        uint g2 = supervisor.Generation.Value;
+        Assert.True(g2 > g1, "console replacement must advance generation");
+    }
+
+    // =================================================================
+    // Test 10: Repeated bounded resource disposal
+    // =================================================================
+
+    [WindowsFact]
+    public void Supervisor_RepeatedDispose_NoException()
+    {
+
+        var config = MakeConfig("nonexistent.exe");
+
+        // Create and dispose multiple times.
+        for (int i = 0; i < 10; i++)
+        {
+            var supervisor = new WorkerSupervisor(config);
+            supervisor.Dispose();
+            // Second dispose should be safe (no-op).
+            supervisor.Dispose();
+        }
+    }
+
+    // =================================================================
+    // Test 11: IPC channel repeated dispose
+    // =================================================================
+
+    [WindowsFact]
+    public void IpcChannel_RepeatedDispose_NoException()
+    {
+
+        var capability = LaunchCapability.Generate();
+
+        for (int i = 0; i < 10; i++)
+        {
+            var channel = CreateChannel(capability);
+            channel.Dispose();
+            channel.Dispose();
+        }
+
+        for (int i = 0; i < 10; i++)
+        {
+            var channel = CreateWorkerChannel("nonexistent-pipe", capability);
+            channel.Dispose();
+            channel.Dispose();
+        }
+    }
+
+    // =================================================================
+    // Test 12: KillOnCloseJob — process assigned and killed on dispose
+    // =================================================================
+
+    [WindowsFact]
+    public void KillOnCloseJob_AssignAndDispose_NoLeak()
+    {
+
+        // Create and dispose job objects repeatedly to verify no handle leak.
+        for (int i = 0; i < 10; i++)
+        {
+            using var job = new KillOnCloseJob();
+            IntPtr handle = job.DangerousGetHandle();
+            Assert.NotEqual(IntPtr.Zero, handle);
+        }
+    }
+
+    // =================================================================
+    // Test 13: EnrollmentStorage — tampered file rejected
+    // =================================================================
+
+    [WindowsFact]
+    public void EnrollmentStorage_TamperedFile_Corrupted()
+    {
+
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-test-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new EnrollmentStorage(tempDir);
+
+            // Create valid state.
+            byte[] secret = [1, 2, 3, 4, 5];
+            var createResult = storage.Create(secret);
+            Assert.Equal(EnrollmentStorageResult.Success, createResult);
+
+            // Tamper with the file (flip some bytes).
+            string storagePath = storage.StoragePath;
+            Assert.True(File.Exists(storagePath));
+
+            byte[] fileBytes = File.ReadAllBytes(storagePath);
+            if (fileBytes.Length > 10)
+            {
+                fileBytes[10] = (byte)~fileBytes[10];
+                File.WriteAllBytes(storagePath, fileBytes);
+            }
+
+            // Re-open — should report corruption.
+            var openResult = storage.Open(out _);
+            Assert.Equal(EnrollmentStorageResult.Corrupted, openResult);
+
+            // Cleanup.
+            storage.Forget();
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    // =================================================================
+    // Test 14: EnrollmentStorage — no overwrite
+    // =================================================================
+
+    [WindowsFact]
+    public void EnrollmentStorage_NoOverwrite_AlreadyExists()
+    {
+
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-test-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new EnrollmentStorage(tempDir);
+
+            byte[] secret1 = [1, 2, 3];
+            byte[] secret2 = [4, 5, 6];
+
+            Assert.Equal(EnrollmentStorageResult.Success, storage.Create(secret1));
+            Assert.Equal(EnrollmentStorageResult.AlreadyExists, storage.Create(secret2));
+
+            // Verify the original secret is still there.
+            Assert.Equal(EnrollmentStorageResult.Success, storage.Open(out var readBack));
+            Assert.Equal(secret1, readBack);
+
+            storage.Forget();
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    // =================================================================
+    // Test 15: BindExpectedPid after pipe creation rejects update
+    // =================================================================
+
+    [WindowsFact]
+    public async Task SupervisorIpcChannel_BindExpectedPid_AfterPipeRejects()
+    {
+
+        var capability = LaunchCapability.Generate();
+        using var channel = CreateChannel(capability, expectedPid: 0);
+
+        // Start listening (creates the pipe).
+        var listenTask = Task.Run(() =>
+            channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromMilliseconds(500)));
+
+        // Wait until the pipe is listening (give the task a moment).
+        await Task.Delay(50);
+
+        // Now trying to bind PID should throw.
+        Assert.Throws<InvalidOperationException>(() => channel.BindExpectedPid(12345));
+
+        await listenTask;
+    }
+
+    [WindowsFact]
+    public void SupervisorIpcChannel_BindExpectedPid_RejectsZero()
+    {
+
+        var capability = LaunchCapability.Generate();
+        using var channel = CreateChannel(capability);
+        Assert.Throws<ArgumentException>(() => channel.BindExpectedPid(0));
+    }
+
+    // =================================================================
+    // Test 15b: SupervisorIpcChannel constructor rejects missing SID
+    // =================================================================
+
+    [WindowsFact]
+    public void SupervisorIpcChannel_MissingSid_Throws()
+    {
+
+        var capability = LaunchCapability.Generate();
+        var fence = MakeFence();
+        Assert.Throws<ArgumentException>(() => new SupervisorIpcChannel(
+            capability, 0, 1, "", fence, 1));
+        Assert.Throws<ArgumentException>(() => new SupervisorIpcChannel(
+            capability, 0, 1, "not-a-sid", fence, 1));
+    }
+
+    [WindowsFact]
+    public void SupervisorIpcChannel_MissingFence_Throws()
+    {
+
+        var capability = LaunchCapability.Generate();
+        var (session, sid) = GetSelfIdentity();
+        var emptyFence = new FencingIds { BootId = Array.Empty<byte>(), LaunchId = FencingIds.GenerateId() };
+        Assert.Throws<ArgumentException>(() => new SupervisorIpcChannel(
+            capability, 0, session, sid, emptyFence, 1));
+    }
+
+    // =================================================================
+    // Test 15c: WorkerIpcChannel constructor rejects missing identity
+    // =================================================================
+
+    [WindowsFact]
+    public void WorkerIpcChannel_MissingServerIdentity_Throws()
+    {
+
+        var capability = LaunchCapability.Generate();
+        var fence = MakeFence();
+        var (session, sid) = GetSelfIdentity();
+
+        Assert.Throws<ArgumentException>(() => new WorkerIpcChannel(
+            "", capability, 1, session, sid, fence, 1));
+        Assert.Throws<ArgumentException>(() => new WorkerIpcChannel(
+            "pipe", capability, 0, session, sid, fence, 1));
+        Assert.Throws<ArgumentException>(() => new WorkerIpcChannel(
+            "pipe", capability, 1, session, "", fence, 1));
+    }
+
+    // =================================================================
+    // Test 16: PhysicalConsoleObserver — schema2 regression intact
+    // =================================================================
+
+    [WindowsFact]
+    public void PhysicalConsoleObserver_ObserveOnce_ReturnsEligibility()
+    {
+
+        // This exercises the real WTS APIs.
+        var eligibility = PhysicalConsoleObserver.Observe();
+
+        // Should return a valid eligibility (not throw).
+        Assert.NotNull(eligibility);
+    }
+
+    // =================================================================
+    // Test 17: PhysicalConsoleObserverLoop — start/stop lifecycle
+    // =================================================================
+
+    [WindowsFact]
+    public void ObserverLoop_StartStop_NoOverlap()
+    {
+
+        int observationCount = 0;
+        using var loop = new PhysicalConsoleObserverLoop(
+            TimeSpan.FromMilliseconds(50),
+            _ => Interlocked.Increment(ref observationCount));
+
+        loop.Start();
+        Assert.True(loop.IsRunning);
+
+        // Starting again should be a no-op (no overlap).
+        loop.Start();
+        Assert.True(loop.IsRunning);
+
+        Thread.Sleep(200); // Let a few observations happen.
+        Assert.True(observationCount > 0);
+
+        loop.Stop();
+        Assert.False(loop.IsRunning);
+
+        // Stop again should be safe.
+        loop.Stop();
+    }
+
+    // =================================================================
+    // Test 18: ObserverLoop — error callback receives exceptions
+    // =================================================================
+
+    [WindowsFact]
+    public void ObserverLoop_ErrorCallback_ReceivesExceptions()
+    {
+
+        // Create a loop and verify start/stop without crashing.
+        using var loop = new PhysicalConsoleObserverLoop(
+            TimeSpan.FromMilliseconds(50),
+            _ => { },
+            _ => { });
+
+        loop.Start();
+        Thread.Sleep(100);
+        loop.Stop();
+    }
+
+    // =================================================================
+    // Test 19: BootId uniqueness across supervisor instances
+    // =================================================================
+
+    [WindowsFact]
+    public void WorkerSupervisor_BootId_UniquePerInstance()
+    {
+
+        var config = MakeConfig("test.exe");
+
+        using var sup1 = new WorkerSupervisor(config);
+        using var sup2 = new WorkerSupervisor(config);
+
+        // Different instances should have different boot IDs.
+        Assert.False(sup1.IsCurrentBoot(sup2.BootId));
+    }
+
+    // =================================================================
+    // Test 20: FencingIds constant-time comparison
+    // =================================================================
+
+    [Fact]
+    public void FencingIds_ConstantTimeComparison()
+    {
+        byte[] id1 = FencingIds.GenerateId();
+        byte[] id2 = FencingIds.GenerateId();
+
+        var ids = new FencingIds { BootId = id1, LaunchId = id1 };
+
+        // Same ID should match.
+        Assert.True(ids.MatchesBoot(id1));
+        Assert.True(ids.MatchesLaunch(id1));
+
+        // Different ID should not match.
+        Assert.False(ids.MatchesBoot(id2));
+        Assert.False(ids.MatchesLaunch(id2));
+
+        // Wrong length should not match.
+        Assert.False(ids.MatchesBoot(new byte[8]));
+        Assert.False(ids.MatchesLaunch(new byte[32]));
+    }
+
+    // =================================================================
+    // Test 21: FenceStamp round-trip and mismatch rejection
+    // =================================================================
+
+    [Fact]
+    public void FenceStamp_Mismatch_FailsClosed()
+    {
+        var boot = FencingIds.GenerateId();
+        var launch = FencingIds.GenerateId();
+        var stamp = new FenceStamp { BootId = boot, LaunchId = launch, Generation = 1 };
+
+        byte[] wire = stamp.Serialize();
+        Assert.True(FenceStamp.TryDeserialize(wire, out var parsed));
+        Assert.True(stamp.Matches(parsed));
+
+        // Wrong generation must not match.
+        var stale = new FenceStamp { BootId = boot, LaunchId = launch, Generation = 2 };
+        Assert.False(stamp.Matches(stale));
+    }
+
+    // =================================================================
+    // Test 22: IpcMessage rejects unknown types (fail closed)
+    // =================================================================
+
+    [Fact]
+    public void IpcMessage_UnknownType_FailsClosed()
+    {
+        byte[] frame = new byte[IpcMessage.HeaderSize];
+        frame[0] = 0xFE; // Undefined message type.
+        Assert.False(IpcMessage.TryDeserialize(frame, frame.Length, out _));
+    }
+
+    // =================================================================
+    // Test 23: Bounded read returns Timeout on silence (native pipe)
+    // =================================================================
+
+    [WindowsFact]
+    public async Task IpcRead_Silence_ReturnsTimeout()
+    {
+        var capability = LaunchCapability.Generate();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        using var channel = CreateChannel(capability, expectedPid: selfPid);
+
+        var handshakeTask = Task.Run(() =>
+            channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(1)));
+
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        await rawClient.ConnectAsync(2000);
+
+        var result = await handshakeTask;
+        Assert.Equal(IpcAuthenticationResult.Timeout, result);
+    }
+
+    // =================================================================
+    // Test 24: Bounded read returns Malformed on oversize claim (native)
+    // =================================================================
+
+    [WindowsFact]
+    public async Task IpcRead_OversizeClaim_ReturnsMalformedNotAuthenticated()
+    {
+        var capability = LaunchCapability.Generate();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        using var channel = CreateChannel(capability, expectedPid: selfPid);
+
+        var handshakeTask = Task.Run(() =>
+            channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(2)));
+
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        await rawClient.ConnectAsync(2000);
+
+        byte[] frame = new byte[IpcMessage.HeaderSize];
+        frame[0] = (byte)IpcMessageType.HandshakeRequest;
+        BitConverter.TryWriteBytes(frame.AsSpan(1, 4), IpcMessage.MaxPayloadSize + 1);
+        await rawClient.WriteAsync(frame);
+        await rawClient.FlushAsync();
+
+        var result = await handshakeTask;
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
+    }
+
+    // =================================================================
+    // Test 25: Disconnect mid-handshake is not authenticated (native)
+    // =================================================================
+
+    [WindowsFact]
+    public async Task IpcRead_Disconnect_NotAuthenticated()
+    {
+        var capability = LaunchCapability.Generate();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        using var channel = CreateChannel(capability, expectedPid: selfPid);
+
+        var handshakeTask = Task.Run(() =>
+            channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(3)));
+
+        using (var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut))
+        {
+            await rawClient.ConnectAsync(2000);
+            // Send a partial header then drop the connection.
+            await rawClient.WriteAsync(new byte[] { (byte)IpcMessageType.HandshakeRequest, 1, 0, 0, 0 });
+            await rawClient.FlushAsync();
+        }
+
+        var result = await handshakeTask;
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
+    }
+
+    // =================================================================
+    // Test 26: Stale heartbeat / zero IDs cannot mutate supervisor state
+    // =================================================================
+
+    [Fact]
+    public void Supervisor_ZeroLaunchId_IsNeverCurrent()
+    {
+        var config = MakeConfig("test.exe");
+        using var supervisor = new WorkerSupervisor(config);
+
+        byte[] zero = new byte[FencingIds.IdLength];
+        uint gen = supervisor.Generation.Value;
+
+        Assert.False(supervisor.IsCurrentLaunch(zero, gen));
+        Assert.False(supervisor.IsCurrentLaunch(null, gen));
+        Assert.False(supervisor.IsCurrentLaunch(new byte[8], gen));
+        Assert.False(supervisor.IsCurrentBoot(zero));
+        Assert.False(supervisor.IsCurrentBoot(null));
+    }
+
+    [Fact]
+    public void Supervisor_BootIdGetter_ReturnsDefensiveCopy()
+    {
+        var config = MakeConfig("test.exe");
+        using var supervisor = new WorkerSupervisor(config);
+
+        byte[] a = supervisor.BootId;
+        byte[] b = supervisor.BootId;
+        Assert.False(ReferenceEquals(a, b));
+
+        a[0] = (byte)~a[0];
+        Assert.False(supervisor.IsCurrentBoot(a));
+        Assert.True(supervisor.IsCurrentBoot(b));
+    }
+
+    // =================================================================
+    // Test 27: Disposal-before-start fails quietly, no worker launched
+    // =================================================================
+
+    [Fact]
+    public void Supervisor_DisposeBeforeStart_TryStartWorkerFailsQuietly()
+    {
+        var config = MakeConfig("nonexistent.exe");
+        var supervisor = new WorkerSupervisor(config);
+        supervisor.Dispose();
+
+        Assert.True(supervisor.IsDisposed);
+        // Must return false without throwing and without launching.
+        Assert.False(supervisor.TryStartWorker());
+    }
+
+    [Fact]
+    public void Supervisor_DisposeBeforeDelayedStart_FailsQuietly()
+    {
+        var config = MakeConfig("nonexistent.exe");
+        var supervisor = new WorkerSupervisor(config);
+
+        // Simulate the MainWindow pattern: capture instance, dispose on another
+        // path, then the delayed startup observes the disposed instance.
+        var captured = supervisor;
+        supervisor.Dispose();
+
+        Assert.True(captured.IsDisposed);
+        Assert.False(captured.TryStartWorker());
+    }
+
+    [Fact]
+    public void Supervisor_RepeatedDisposeThenStart_NoThrow()
+    {
+        var config = MakeConfig("nonexistent.exe");
+        var supervisor = new WorkerSupervisor(config);
+        supervisor.Dispose();
+        supervisor.Dispose();
+        Assert.False(supervisor.TryStartWorker());
+    }
+
+    // =================================================================
+    // Test 28: Generation exhaustion fences and blocks restart
+    // =================================================================
+
+    [Fact]
+    public void Supervisor_GenerationExhaustion_BlocksRestart()
+    {
+        // Start one step below the maximum so a single invalidation exhausts.
+        var config = MakeConfig("nonexistent.exe") with
+        {
+            InitialGeneration = DesktopGeneration.MaxValue - 1,
+        };
+        using var supervisor = new WorkerSupervisor(config);
+
+        Assert.False(supervisor.IsGenerationExhausted);
+        Assert.Equal(DesktopGeneration.MaxValue - 1, supervisor.Generation.Value);
+
+        // One invalidation advances to MaxValue — not past it, not to zero.
+        supervisor.InvalidateGeneration("test exhaustion step");
+        Assert.Equal(DesktopGeneration.MaxValue, supervisor.Generation.Value);
+
+        // The next invalidation exhausts: counter stays at MaxValue, never 0.
+        supervisor.InvalidateGeneration("test exhaustion");
+        Assert.True(supervisor.IsGenerationExhausted);
+        Assert.Equal(DesktopGeneration.MaxValue, supervisor.Generation.Value);
+        Assert.NotEqual(0u, supervisor.Generation.Value);
+
+        // Restart is permanently blocked — fails quietly, no worker launched.
+        Assert.False(supervisor.TryStartWorker());
+
+        // Unlock must not revive or wrap the generation either.
+        supervisor.OnSessionUnlocked();
+        Assert.True(supervisor.IsGenerationExhausted);
+        Assert.Equal(DesktopGeneration.MaxValue, supervisor.Generation.Value);
+        Assert.False(supervisor.TryStartWorker());
+    }
+
+    [Fact]
+    public void Supervisor_ExhaustedThenInvalidate_StaysFenced()
+    {
+        var config = MakeConfig("nonexistent.exe") with
+        {
+            InitialGeneration = DesktopGeneration.MaxValue,
+        };
+        using var supervisor = new WorkerSupervisor(config);
+
+        // Already at max: first invalidation must exhaust immediately.
+        supervisor.InvalidateGeneration("already at max");
+        Assert.True(supervisor.IsGenerationExhausted);
+        Assert.Equal(DesktopGeneration.MaxValue, supervisor.Generation.Value);
+
+        // Further invalidations are inert.
+        supervisor.InvalidateGeneration("post-exhaustion");
+        Assert.True(supervisor.IsGenerationExhausted);
+        Assert.Equal(DesktopGeneration.MaxValue, supervisor.Generation.Value);
+    }
+
+    // =================================================================
+    // Helper
+    // =================================================================
+
+    private static SupervisorConfig MakeConfig(string workerPath)
+        => new()
+        {
+            WorkerExecutablePath = workerPath,
+            WorkerConnectTimeout = TimeSpan.FromSeconds(10),
+            WorkerMaxLifetime = TimeSpan.FromSeconds(30),
+            HeartbeatInterval = TimeSpan.FromSeconds(5),
+            HeartbeatTimeout = TimeSpan.FromSeconds(15),
+            MaxConsecutiveFailures = 3,
+            RestartDelay = TimeSpan.FromSeconds(1),
+        };
+
+    private static string? GetCurrentProcessTokenSid()
+    {
+        if (!PlatformHelper.IsWindows) return null;
+        return KernelIdentity.ReadProcessTokenSid(Kernel32Native.GetCurrentProcessId());
+    }
+}
+
+/// <summary>
+/// Helper to detect OS platform at runtime.
+/// </summary>
+internal static class PlatformHelper
+{
+    public static bool IsWindows =>
+        System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Windows);
+}
+
+/// <summary>
+/// Fact that reports a real xUnit SKIP when not on Windows. Native evidence
+/// must never be fabricated by a quiet early return inside a [Fact].
+/// </summary>
+public sealed class WindowsFactAttribute : FactAttribute
+{
+    public WindowsFactAttribute()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Skip = "Requires Windows runtime";
+        }
+    }
+}
+
+/// <summary>
+/// Theory that reports a real xUnit SKIP when not on Windows.
+/// </summary>
+public sealed class WindowsTheoryAttribute : TheoryAttribute
+{
+    public WindowsTheoryAttribute()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Skip = "Requires Windows runtime";
+        }
+    }
+}

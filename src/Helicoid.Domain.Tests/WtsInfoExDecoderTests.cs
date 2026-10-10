@@ -1,4 +1,4 @@
-using Helicoid.ConsoleProbe.Native;
+using Helicoid.WindowsPlatform.Native;
 using Helicoid.Domain.PhysicalConsole;
 using Xunit;
 

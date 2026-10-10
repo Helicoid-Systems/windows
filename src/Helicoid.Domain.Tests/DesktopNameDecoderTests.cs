@@ -1,5 +1,5 @@
 using System.Text;
-using Helicoid.ConsoleProbe.Native;
+using Helicoid.WindowsPlatform.Native;
 using Xunit;
 
 namespace Helicoid.Domain.Tests;
