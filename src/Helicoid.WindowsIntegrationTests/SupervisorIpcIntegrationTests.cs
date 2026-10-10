@@ -39,6 +39,35 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
     private static FencingIds MakeFence()
         => new() { BootId = FencingIds.GenerateId(), LaunchId = FencingIds.GenerateId() };
 
+    /// <summary>
+    /// Await a counterpart task with a hard bound. A hung peer must fail the
+    /// test with TimeoutException rather than stall the native CI run.
+    /// </summary>
+    private static async Task<T> AwaitBoundedAsync<T>(Task<T> task, TimeSpan timeout)
+    {
+        var completed = await Task.WhenAny(task, Task.Delay(timeout)).ConfigureAwait(false);
+        if (completed != task)
+        {
+            throw new TimeoutException($"Counterpart did not complete within {timeout.TotalSeconds:0.#}s.");
+        }
+
+        return await task.ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Await a counterpart task with a hard bound (non-generic).
+    /// </summary>
+    private static async Task AwaitBoundedAsync(Task task, TimeSpan timeout)
+    {
+        var completed = await Task.WhenAny(task, Task.Delay(timeout)).ConfigureAwait(false);
+        if (completed != task)
+        {
+            throw new TimeoutException($"Counterpart did not complete within {timeout.TotalSeconds:0.#}s.");
+        }
+
+        await task.ConfigureAwait(false);
+    }
+
     private static (uint Session, string Sid) GetSelfIdentity()
     {
         uint pid = Kernel32Native.GetCurrentProcessId();
@@ -103,7 +132,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         var result = channel.WaitForAuthenticatedConnection(TimeSpan.FromSeconds(10));
         Assert.Equal(IpcAuthenticationResult.Authenticated, result);
 
-        var workerResult = await workerTask;
+        var workerResult = await AwaitBoundedAsync(workerTask, TimeSpan.FromSeconds(15));
         Assert.Equal(IpcAuthenticationResult.Authenticated, workerResult);
     }
 
@@ -131,7 +160,11 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         var result = channel.WaitForAuthenticatedConnection(TimeSpan.FromSeconds(10));
         Assert.Equal(IpcAuthenticationResult.InvalidCapability, result);
 
-        var workerResult = await workerTask;
+        // Peer must finish its own I/O deadline (10s handshake) well inside
+        // this bound. A stalled peer is a test failure with evidence, not an
+        // ignored default — IpcAuthenticationResult.Authenticated == 0 makes
+        // default ambiguous.
+        var workerResult = await AwaitBoundedAsync(workerTask, TimeSpan.FromSeconds(15));
         Assert.NotEqual(IpcAuthenticationResult.Authenticated, workerResult);
     }
 
@@ -174,7 +207,8 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         var result = channel.WaitForAuthenticatedConnection(TimeSpan.FromSeconds(10));
         Assert.Equal(IpcAuthenticationResult.ProcessMismatch, result);
 
-        var workerResult = await workerTask;
+        // Peer must finish its own I/O deadline well inside this bound.
+        var workerResult = await AwaitBoundedAsync(workerTask, TimeSpan.FromSeconds(15));
         Assert.NotEqual(IpcAuthenticationResult.Authenticated, workerResult);
     }
 
@@ -205,7 +239,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         await rawClient.WriteAsync(garbage);
         await rawClient.FlushAsync();
 
-        var result = await handshakeTask;
+        var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
         // Should be either MalformedFrame or Timeout (depending on read behavior).
         Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
     }
@@ -231,7 +265,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         await rawClient.ConnectAsync(5000);
 
         // Don't send anything — let it timeout.
-        var result = await handshakeTask;
+        var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
         Assert.Equal(IpcAuthenticationResult.Timeout, result);
     }
 
@@ -619,7 +653,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         // Now trying to bind PID should throw.
         Assert.Throws<InvalidOperationException>(() => channel.BindExpectedPid(12345));
 
-        await listenTask;
+        await AwaitBoundedAsync(listenTask, TimeSpan.FromSeconds(5));
     }
 
     [WindowsFact]
@@ -834,7 +868,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
         await rawClient.ConnectAsync(2000);
 
-        var result = await handshakeTask;
+        var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
         Assert.Equal(IpcAuthenticationResult.Timeout, result);
     }
 
@@ -862,7 +896,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         await rawClient.WriteAsync(frame);
         await rawClient.FlushAsync();
 
-        var result = await handshakeTask;
+        var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
         Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
     }
 
@@ -889,7 +923,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
             await rawClient.FlushAsync();
         }
 
-        var result = await handshakeTask;
+        var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
         Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
     }
 
@@ -1024,6 +1058,157 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         supervisor.InvalidateGeneration("post-exhaustion");
         Assert.True(supervisor.IsGenerationExhausted);
         Assert.Equal(DesktopGeneration.MaxValue, supervisor.Generation.Value);
+    }
+
+    // =================================================================
+    // Test 29: Bounded writes/reads/connect/disposal (native regressions)
+    // =================================================================
+
+    [WindowsFact]
+    public async Task IpcWrite_SilentPeer_BoundedNotHung()
+    {
+        // Server accepts and then never reads; client write must return
+        // false within the write bound rather than hang forever.
+        var capability = LaunchCapability.Generate();
+        var fence = MakeFence();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        using var channel = CreateChannel(capability, expectedPid: selfPid, fence: fence);
+
+        var handshakeTask = Task.Run(() =>
+            channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(2)));
+
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        await rawClient.ConnectAsync(2000);
+
+        // Complete the handshake from the raw side so the server marks us
+        // connected, then stop reading so a subsequent server write is blocked.
+        var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
+
+        // A write on a dead/silent peer must be bounded — TrySendMessage
+        // returns within MaxWriteTimeout rather than hanging. Both true and
+        // false are legal outcomes; a timeout is not.
+        var writeTask = Task.Run(() => channel.TrySendMessage(
+            new IpcMessage { Type = IpcMessageType.Shutdown, Payload = channel.CreateFenceStamp().Serialize() },
+            TimeSpan.FromSeconds(2)));
+        await AwaitBoundedAsync(writeTask, TimeSpan.FromSeconds(6));
+    }
+
+    [WindowsFact]
+    public async Task IpcChannel_Dispose_CancelsPendingConnect()
+    {
+        // Disposing the server while WaitForConnectionAsync is pending must
+        // unblock the wait promptly (via dispose cancellation), not hang.
+        var capability = LaunchCapability.Generate();
+        var channel = CreateChannel(capability, expectedPid: Kernel32Native.GetCurrentProcessId());
+
+        var waitTask = Task.Run(() =>
+            channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(30)));
+
+        // Give the wait a moment to enter WaitForConnectionAsync.
+        await Task.Delay(100);
+        channel.Dispose();
+
+        // Dispose must cancel the pending connect within a small bound.
+        var result = await AwaitBoundedAsync(waitTask, TimeSpan.FromSeconds(6));
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
+    }
+
+    [WindowsFact]
+    public async Task IpcWorker_Dispose_CancelsPendingConnect()
+    {
+        // Worker side: dispose while ConnectAsync is pending must unblock.
+        var capability = LaunchCapability.Generate();
+        var fence = MakeFence();
+        uint pid = Kernel32Native.GetCurrentProcessId();
+        WtsNative.ProcessIdToSessionId(pid, out uint session);
+        string sid = GetCurrentProcessTokenSid() ?? "S-1-5-18";
+
+        // Pipe name that no server will create — connect pends.
+        var worker = new WorkerIpcChannel(
+            "helicoid-worker-never-created-" + Guid.NewGuid().ToString("N"),
+            capability, pid, session, sid, fence, 1);
+
+        var connectTask = Task.Run(() => worker.ConnectAndHandshakeAsync(TimeSpan.FromSeconds(30)));
+
+        await Task.Delay(100);
+        worker.Dispose();
+
+        var result = await AwaitBoundedAsync(connectTask, TimeSpan.FromSeconds(6));
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
+    }
+
+    [WindowsFact]
+    public async Task IpcRead_PeerDisconnect_ReturnsDisconnectedNotHang()
+    {
+        var capability = LaunchCapability.Generate();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        using var channel = CreateChannel(capability, expectedPid: selfPid);
+
+        var handshakeTask = Task.Run(() =>
+            channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(3)));
+
+        using (var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut))
+        {
+            await rawClient.ConnectAsync(2000);
+        } // Disconnect immediately without sending.
+
+        var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(6));
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
+    }
+
+    // =================================================================
+    // Test 30: Single-instance pipe bind — SecondServerCannotBind
+    //
+    // This test proves ONLY that a second NamedPipeServerStream cannot bind
+    // the same name while the first instance is alive, and that the first
+    // server does accept a real client (so the name is genuinely bound).
+    //
+    // It does NOT prove restrictive ACL / remote denial / cross-SID access.
+    // True cross-SID and remote ACL behavior, and session-0 service to
+    // user-worker compatibility, remain NOT VERIFIED.
+    // =================================================================
+
+    [WindowsFact]
+    public async Task SecondServerCannotBind()
+    {
+        var capability = LaunchCapability.Generate();
+        var fence = MakeFence();
+        uint selfPid = Kernel32Native.GetCurrentProcessId();
+
+        // First server owns the pipe name.
+        using var first = CreateChannel(capability, expectedPid: selfPid, fence: fence);
+
+        // Start listening on the first server (creates and binds the name).
+        var firstListen = Task.Run(() =>
+            first.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(10)));
+
+        // Give the first server a moment to create the pipe instance.
+        await Task.Delay(200);
+
+        // A real raw client connects — proves the first server is actually bound.
+        using (var rawClient = new NamedPipeClientStream(".", first.PipeName, PipeDirection.InOut))
+        {
+            await rawClient.ConnectAsync(2000);
+
+            // While the first server is alive, a second server with the same
+            // name must fail to bind. The failure surfaces as a non-Authenticated
+            // result from WaitForAuthenticatedConnectionAsync (constructor or
+            // WaitForConnectionAsync throws IOException / returns
+            // TransportFailure) — bounded, never hung.
+            using var second = CreateChannel(capability, expectedPid: selfPid, fence: fence);
+            var secondResult = await second.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(2));
+            Assert.NotEqual(IpcAuthenticationResult.Authenticated, secondResult);
+
+            // Disconnect the raw client so the first server's read fails fast.
+        }
+
+        // Await the first server's listen task with a hard bound. It must
+        // observe the peer disconnect and return a non-Authenticated result.
+        var firstResult = await AwaitBoundedAsync(firstListen, TimeSpan.FromSeconds(15));
+        Assert.NotEqual(IpcAuthenticationResult.Authenticated, firstResult);
     }
 
     // =================================================================

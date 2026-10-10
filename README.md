@@ -41,8 +41,14 @@ dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTest
 Portable pure-protocol facts run everywhere. Windows-native facts
 (`[WindowsFact]` — named pipes, Job Objects, kernel PID/session/SID identity,
 process launch) report a real xUnit **skip** on non-Windows and are mandatory
-on Windows CI. Last local run (macOS): **10 passed, 30 skipped** — the 30
+on Windows CI. Last local run (macOS): **10 passed, 35 skipped** — the 35
 skips are not native proof.
+
+Native CI is bounded: job/step `timeout-minutes`, `dotnet test --blame-hang
+--blame-hang-timeout 5m`, and `if: always()` upload of TRX results and dumps.
+The complete CaptureWorker runtime bundle (exe + dll + deps.json +
+runtimeconfig.json + project-reference assemblies) is staged beside the test
+assembly — the apphost exe alone is not runnable.
 
 ### Full Windows apps (Windows 11 x64)
 

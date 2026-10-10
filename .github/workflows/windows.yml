@@ -29,6 +29,8 @@ jobs:
   windows-build:
     name: Windows 11 x64 build and tests
     runs-on: windows-latest
+    # Hard job bound so a hung native test cannot stall the run indefinitely.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -43,6 +45,7 @@ jobs:
         run: dotnet restore src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj --locked-mode
 
       - name: Domain tests
+        timeout-minutes: 10
         run: dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo --no-restore
 
       - name: Build Helicoid Manager
@@ -117,6 +120,7 @@ jobs:
       # --- Worker IPC admission check (real child process, fail-closed) ---
 
       - name: Worker IPC admission checks (native Windows)
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $workerExe = "artifacts/metadata-worker/Helicoid.CaptureWorker.exe"
@@ -188,6 +192,7 @@ jobs:
           Write-Host "native-query-check OK"
 
       - name: Run ConsoleProbe and assert result shape
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $out = & "artifacts/console-probe/Helicoid.ConsoleProbe.exe" | Out-String
@@ -297,24 +302,50 @@ jobs:
           Write-Host "CaptureWorker.exe found in Computer bundle"
 
       - name: Build Windows-native integration tests
+        timeout-minutes: 10
         run: dotnet build src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release --nologo
 
       - name: Run Windows-native integration tests (real IPC/supervisor paths)
+        timeout-minutes: 15
         shell: pwsh
         run: |
-          # Stage the worker exe next to the test assembly so process-launch
-          # tests exercise the real CaptureWorker binary.
+          # Stage the COMPLETE worker runtime bundle next to the test assembly.
+          # The apphost exe alone is not runnable: it needs its .dll,
+          # .deps.json, .runtimeconfig.json, and project-reference assemblies.
           $testBin = (Get-ChildItem -Path "src/Helicoid.WindowsIntegrationTests/bin/Release" -Recurse -Filter "Helicoid.WindowsIntegrationTests.dll" | Select-Object -First 1).DirectoryName
-          $workerSrc = "src/Helicoid.CaptureWorker/bin/Release/net10.0/Helicoid.CaptureWorker.exe"
-          if (-not (Test-Path $workerSrc)) {
-            # Fall back to a framework-dependent dll host if exe was not produced.
-            $workerSrc = "src/Helicoid.CaptureWorker/bin/Release/net10.0/Helicoid.CaptureWorker.dll"
-          }
-          if (Test-Path $workerSrc) {
-            Copy-Item $workerSrc -Destination $testBin -Force
-            Write-Host "Staged worker binary into $testBin"
-          }
+          $workerOut = "src/Helicoid.CaptureWorker/bin/Release/net10.0"
+          if (-not (Test-Path $workerOut)) { throw "CaptureWorker output dir missing: $workerOut" }
 
+          $required = @(
+            "Helicoid.CaptureWorker.exe",
+            "Helicoid.CaptureWorker.dll",
+            "Helicoid.CaptureWorker.deps.json",
+            "Helicoid.CaptureWorker.runtimeconfig.json",
+            "Helicoid.WindowsPlatform.dll",
+            "Helicoid.Domain.dll"
+          )
+          foreach ($name in $required) {
+            $src = Join-Path $workerOut $name
+            if (-not (Test-Path $src)) { throw "Required worker runtime file missing: $src" }
+            Copy-Item $src -Destination $testBin -Force
+            Write-Host "Staged $name"
+          }
+          Write-Host "Complete worker runtime bundle staged into $testBin"
+
+          # blame-hang isolates a hung test and dumps it instead of stalling
+          # the job. Results and dumps are uploaded unconditionally below.
           dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj `
             -c Release --nologo --no-build `
+            --blame-hang --blame-hang-timeout 5m `
+            --results-directory artifacts/test-results/integration `
+            --logger "trx;LogFileName=integration.trx" `
             --logger "console;verbosity=normal"
+
+      - name: Upload native test results and dumps (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: helicoid-windows-native-test-results
+          path: artifacts/test-results/
+          if-no-files-found: warn
+          retention-days: 14
