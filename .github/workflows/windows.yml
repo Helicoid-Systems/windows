@@ -31,16 +31,16 @@ jobs:
         run: dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
 
       - name: Build Helicoid Manager
-        run: dotnet build src/Helicoid.Manager/Helicoid.Manager.csproj -c Release --nologo
+        run: dotnet build src/Helicoid.Manager/Helicoid.Manager.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None --nologo
 
       - name: Build Helicoid Computer
-        run: dotnet build src/Helicoid.Computer/Helicoid.Computer.csproj -c Release --nologo
+        run: dotnet build src/Helicoid.Computer/Helicoid.Computer.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None --nologo
 
       - name: Publish unsigned development output
         shell: pwsh
         run: |
-          dotnet publish src/Helicoid.Manager/Helicoid.Manager.csproj -c Release -r win-x64 --self-contained false -o artifacts/manager
-          dotnet publish src/Helicoid.Computer/Helicoid.Computer.csproj -c Release -r win-x64 --self-contained false -o artifacts/computer
+          dotnet publish src/Helicoid.Manager/Helicoid.Manager.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/manager
+          dotnet publish src/Helicoid.Computer/Helicoid.Computer.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/computer
 
       - name: Upload unsigned development output
         uses: actions/upload-artifact@v4
