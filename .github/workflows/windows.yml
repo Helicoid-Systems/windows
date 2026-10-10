@@ -1,6 +1,10 @@
 # Windows build and tests for Helicoid Manager / Helicoid Computer.
 # WinUI apps require windows-latest. Domain tests also run on this job.
 # Unsigned development output is uploaded for a Windows 11 x64 tester.
+#
+# Development bundle flags (CI-verified after the ProcessorArchitecture-neutral
+# MSIX failure): -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None.
+# Those defaults are also baked into the WinUI csproj files.
 
 name: Windows
 
@@ -49,6 +53,3 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: 14
-
-      # CI result is unknown until this workflow runs on GitHub Actions.
-      # Local macOS verification cannot claim a Windows build passed.

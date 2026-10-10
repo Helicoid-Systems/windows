@@ -1,24 +1,45 @@
 {
   "schemaVersion": 1,
   "copiedOn": "2026-10-10",
+  "updatedOn": "2026-10-10",
   "canonicalSource": "assets/brand/ in the Helicoid main workspace",
   "provenance": "User-supplied original branding assets (manifest.json providedOn 2026-10-09). Copied as source only.",
   "windowsAssignment": {
     "platform": "Windows",
     "appRole": "manager and monitored computer",
     "source": "HS App icon.icon",
-    "status": "Existing source retained; native Windows icon exports not generated"
+    "status": "Existing original source retained; native Windows icon exports not generated"
   },
   "notes": [
+    "Windows uses the original HS App icon.icon for both manager and monitored computer. That matches docs/ui.md and the brand manifest Windows assignment.",
     "No fabricated .ico, .png scale set, or StoreLogo export is generated here.",
-    "Native Windows package icon integration remains pending B01/V51-class proof on a Windows build host.",
-    "SVG logos are retained for light/dark surfaces; they are not compiled into native image resources by this tree."
+    "Native Windows package icon integration remains unproven on a Windows build host."
   ],
   "files": [
-    { "path": "HS App icon.icon/icon.json", "role": "Layered icon source metadata" },
-    { "path": "HS App icon.icon/Assets/hs stripe.svg", "role": "Stripe layer" },
-    { "path": "HS App icon.icon/Assets/hs text.svg", "role": "Text layer" },
-    { "path": "hs logo.svg", "role": "Logo, dark lettering for light surfaces" },
-    { "path": "hs logo white.svg", "role": "Logo, white lettering for dark surfaces" }
+    {
+      "path": "HS App icon.icon/icon.json",
+      "role": "Windows manager and endpoint layered icon source metadata",
+      "sha256": "ae154c552dcf8b8e2d7c16b6fb355013e9133f8df9410bb87746913a20398eca"
+    },
+    {
+      "path": "HS App icon.icon/Assets/hs stripe.svg",
+      "role": "Stripe layer",
+      "sha256": "0d41b93ce1c4ee017e4516534bb1884c77978f9a7ff6edf6ad633857d560fb01"
+    },
+    {
+      "path": "HS App icon.icon/Assets/hs text.svg",
+      "role": "Text layer",
+      "sha256": "24c05bca221ca5455086a269e7b9b68d5d503c1608d73d57428c31eb733f3aee"
+    },
+    {
+      "path": "hs logo.svg",
+      "role": "Logo, dark lettering for light surfaces",
+      "sha256": "36455cf5b44d1d3a72d5218de5433f53a332f37cc4acc9a31aaa9e643086d271"
+    },
+    {
+      "path": "hs logo white.svg",
+      "role": "Logo, white lettering for dark surfaces",
+      "sha256": "12b5df88c873c892f4eee969996b9b26254d9f62743805a9e6d3aa277fab5869"
+    }
   ]
 }
