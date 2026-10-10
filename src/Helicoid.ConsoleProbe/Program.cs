@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Helicoid.ConsoleProbe;
@@ -13,6 +14,7 @@ if (args.Length == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "/
 {
     Console.Out.WriteLine($"{ToolName}: bounded physical-console diagnostic (D26/RD03/V40 prerequisite).");
     Console.Out.WriteLine("No arguments: full physical-console diagnostic (JSON to stdout).");
+    Console.Out.WriteLine("--watch: observe for 30 seconds; group consecutive identical metadata reports.");
     Console.Out.WriteLine("--native-query-check: prove the shared UOI_NAME reader against GetThreadDesktop.");
     Console.Out.WriteLine("Exit 0 on any completed diagnostic, including eligibility=false.");
     Console.Out.WriteLine("Exit 2 for invocation parse errors. Exit 3 if --native-query-check fails.");
@@ -24,23 +26,50 @@ if (args.Length == 1 && args[0] == "--native-query-check")
     return RunNativeQueryCheck();
 }
 
+if (args.Length == 1 && args[0] == "--watch")
+{
+    var segments = new List<ConsoleWatchSegment>();
+    var watch = Stopwatch.StartNew();
+    const int SampleCount = 31;
+    for (int sample = 0; sample < SampleCount; sample++)
+    {
+        var current = ObserveReport();
+        int second = (int)watch.Elapsed.TotalSeconds;
+        if (segments.Count > 0 && segments[^1].Report == current)
+        {
+            segments[^1] = segments[^1] with
+            {
+                LastSecond = second,
+                Count = segments[^1].Count + 1,
+            };
+        }
+        else
+        {
+            segments.Add(new ConsoleWatchSegment(second, second, 1, current));
+        }
+        if (sample < SampleCount - 1)
+        {
+            Thread.Sleep(1000);
+        }
+    }
+    Console.Out.WriteLine(JsonSerializer.Serialize(new
+    {
+        tool = ToolName,
+        mode = "lock-watch",
+        sampleCount = SampleCount,
+        elapsedSeconds = (int)watch.Elapsed.TotalSeconds,
+        observations = segments,
+    }, new JsonSerializerOptions { WriteIndented = true }));
+    return ExitOk;
+}
+
 if (args.Length > 0)
 {
     Console.Error.WriteLine($"{ToolName}: unknown arguments. Use --help.");
     return ExitInvocationError;
 }
 
-ConsoleProbeReport report;
-try
-{
-    PhysicalConsoleEligibility eligibility = PhysicalConsoleObserver.Observe();
-    report = ConsoleProbeReport.FromResult(eligibility);
-}
-catch (Exception)
-{
-    // Bounded safe text only: fixed reason, no exception message, stack, or paths.
-    report = ConsoleProbeReport.ObservationError();
-}
+ConsoleProbeReport report = ObserveReport();
 
 var options = new JsonSerializerOptions
 {
@@ -49,6 +78,19 @@ var options = new JsonSerializerOptions
 };
 Console.Out.WriteLine(JsonSerializer.Serialize(report, options));
 return ExitOk;
+
+static ConsoleProbeReport ObserveReport()
+{
+    try
+    {
+        return ConsoleProbeReport.FromResult(PhysicalConsoleObserver.Observe());
+    }
+    catch (Exception)
+    {
+        // Fixed metadata only; exception messages, stacks and paths are never emitted.
+        return ConsoleProbeReport.ObservationError();
+    }
+}
 
 // Query-correctness proof only: run the shared bounded UOI_NAME reader on the
 // borrowed GetThreadDesktop handle. Emits a sanitized success bool — never the
@@ -100,6 +142,9 @@ internal sealed record ConsoleProbeReport(
     [property: JsonPropertyName("reason")] string Reason,
     [property: JsonPropertyName("facts")] ConsoleProbeFacts Facts)
 {
+    [JsonPropertyName("schemaVersion")]
+    public int SchemaVersion => 2;
+
     /// <summary>
     /// Explicit wording required for every report: diagnostic metadata only,
     /// not admitted / capture-authorized / enrolled; no desktop generation is
@@ -129,7 +174,9 @@ internal sealed record ConsoleProbeReport(
                 observation.DesktopCategory.ToString(),
                 observation.IsStable,
                 facts.WtsQuerySucceeded,
-                observation.DesktopQuerySucceeded));
+                observation.DesktopQuerySucceeded,
+                facts.LockState.ToString(),
+                facts.LockQuerySucceeded));
     }
 
     public static ConsoleProbeReport ObservationError()
@@ -146,7 +193,9 @@ internal sealed record ConsoleProbeReport(
                 DesktopCategory: InputDesktopCategory.Missing.ToString(),
                 ObservationStable: false,
                 WtsQuerySucceeded: false,
-                DesktopQuerySucceeded: false));
+                DesktopQuerySucceeded: false,
+                LockState: WtsSessionLockState.Unknown.ToString(),
+                LockQuerySucceeded: false));
 }
 
 internal sealed record ConsoleProbeFacts(
@@ -157,7 +206,9 @@ internal sealed record ConsoleProbeFacts(
     [property: JsonPropertyName("desktopCategory")] string DesktopCategory,
     [property: JsonPropertyName("observationStable")] bool ObservationStable,
     [property: JsonPropertyName("wtsQuerySucceeded")] bool WtsQuerySucceeded,
-    [property: JsonPropertyName("desktopQuerySucceeded")] bool DesktopQuerySucceeded);
+    [property: JsonPropertyName("desktopQuerySucceeded")] bool DesktopQuerySucceeded,
+    [property: JsonPropertyName("lockState")] string LockState,
+    [property: JsonPropertyName("lockQuerySucceeded")] bool LockQuerySucceeded);
 
 /// <summary>
 /// Sanitized --native-query-check result: success bool only, no desktop name.
@@ -167,3 +218,9 @@ internal sealed record NativeQueryCheckReport(
     [property: JsonPropertyName("mode")] string Mode,
     [property: JsonPropertyName("nativeQueryCheck")] bool NativeQueryCheck,
     [property: JsonPropertyName("note")] string Note);
+
+internal sealed record ConsoleWatchSegment(
+    [property: JsonPropertyName("firstSecond")] int FirstSecond,
+    [property: JsonPropertyName("lastSecond")] int LastSecond,
+    [property: JsonPropertyName("count")] int Count,
+    [property: JsonPropertyName("report")] ConsoleProbeReport Report);

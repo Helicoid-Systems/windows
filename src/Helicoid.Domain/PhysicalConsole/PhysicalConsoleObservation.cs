@@ -10,7 +10,9 @@ public readonly record struct ConsolePassFacts(
     WtsSessionId ProcessSessionId,
     int ConnectState,
     int ProtocolType,
-    bool WtsQuerySucceeded)
+    bool WtsQuerySucceeded,
+    WtsSessionLockState LockState = WtsSessionLockState.Unknown,
+    bool LockQuerySucceeded = false)
 {
     /// <summary>
     /// True when two passes observed identical relevant fields. Any difference
@@ -21,7 +23,9 @@ public readonly record struct ConsolePassFacts(
         && ProcessSessionId == other.ProcessSessionId
         && ConnectState == other.ConnectState
         && ProtocolType == other.ProtocolType
-        && WtsQuerySucceeded == other.WtsQuerySucceeded;
+        && WtsQuerySucceeded == other.WtsQuerySucceeded
+        && LockState == other.LockState
+        && LockQuerySucceeded == other.LockQuerySucceeded;
 }
 
 /// <summary>
