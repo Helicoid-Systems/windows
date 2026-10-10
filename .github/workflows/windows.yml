@@ -2,6 +2,9 @@
 # WinUI apps require windows-latest. Domain tests also run on this job.
 # Unsigned development output is uploaded for a Windows 11 x64 tester.
 #
+# Helicoid.ConsoleProbe is a separate small diagnostic console tool
+# (D26/RD03/V40 prerequisite). It is never folded into the WinUI bundle.
+#
 # Development bundle flags (CI-verified after the ProcessorArchitecture-neutral
 # MSIX failure): -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None.
 # Those defaults are also baked into the WinUI csproj files.
@@ -31,8 +34,11 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Restore (locked mode)
+        run: dotnet restore src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj --locked-mode
+
       - name: Domain tests
-        run: dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
+        run: dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo --no-restore
 
       - name: Build Helicoid Manager
         run: dotnet build src/Helicoid.Manager/Helicoid.Manager.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None --nologo
@@ -46,10 +52,107 @@ jobs:
           dotnet publish src/Helicoid.Manager/Helicoid.Manager.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/manager
           dotnet publish src/Helicoid.Computer/Helicoid.Computer.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/computer
 
+      - name: Stage development launcher beside Manager
+        shell: pwsh
+        run: |
+          Copy-Item "scripts/start-development-manager.cmd" "artifacts/manager/start-development-manager.cmd" -ErrorAction Stop
+          Copy-Item "scripts/BUNDLE-TESTING.md" "artifacts/manager/BUNDLE-TESTING.md" -ErrorAction Stop
+
+      - name: Launcher argument-forwarding tests (native Windows, no GUI)
+        shell: pwsh
+        run: powershell -File scripts/test-start-development-manager.ps1
+
       - name: Upload unsigned development output
         uses: actions/upload-artifact@v4
         with:
           name: helicoid-windows-unsigned-dev
           path: artifacts/
+          if-no-files-found: error
+          retention-days: 14
+
+      # --- ConsoleProbe: independent build, publish, shape check, artifact ---
+
+      - name: Build Helicoid.ConsoleProbe
+        run: dotnet build src/Helicoid.ConsoleProbe/Helicoid.ConsoleProbe.csproj -c Release --nologo
+
+      - name: Publish Helicoid.ConsoleProbe (self-contained win-x64)
+        run: dotnet publish src/Helicoid.ConsoleProbe/Helicoid.ConsoleProbe.csproj -c Release -r win-x64 --self-contained true --nologo -o artifacts/console-probe
+
+      - name: Native query check (proves UOI reader on real Windows)
+        shell: pwsh
+        run: |
+          $out = & "artifacts/console-probe/Helicoid.ConsoleProbe.exe" --native-query-check | Out-String
+          $code = $LASTEXITCODE
+          Write-Host $out
+          if ($code -ne 0) {
+            Write-Error "native-query-check exited with $code (expected 0 when UOI reader works)"
+            exit 1
+          }
+          $report = $out | ConvertFrom-Json
+          if ($report.nativeQueryCheck -ne $true) {
+            Write-Error "nativeQueryCheck must be true on Windows CI (got $($report.nativeQueryCheck))"
+            exit 1
+          }
+          # Sanitized bool only: desktop name/path/user must never appear.
+          if ($out -match 'Default|Winlogon|Secure|ScreenSaver|Desktop\\\\') {
+            Write-Error "native-query-check output leaked desktop name/path"
+            exit 1
+          }
+          Write-Host "native-query-check OK"
+
+      - name: Run ConsoleProbe and assert result shape
+        shell: pwsh
+        run: |
+          $out = & "artifacts/console-probe/Helicoid.ConsoleProbe.exe" | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ConsoleProbe exited with $LASTEXITCODE (expected 0 for any completed diagnostic)"
+            exit 1
+          }
+          Write-Host $out
+          $report = $out | ConvertFrom-Json
+
+          foreach ($field in 'tool','disclaimer','eligible','reason','facts') {
+            if ($null -eq $report.PSObject.Properties[$field]) {
+              Write-Error "Missing required field: $field"
+              exit 1
+            }
+          }
+          if ($report.tool -ne 'Helicoid.ConsoleProbe') {
+            Write-Error "Unexpected tool name: $($report.tool)"
+            exit 1
+          }
+          foreach ($phrase in 'Diagnostic metadata only','Not admitted','Not capture-authorized','not enrolled','No desktop generation is manufactured','No remote access is enabled','working candidate diagnostic') {
+            if ($report.disclaimer -notlike "*$phrase*") {
+              Write-Error "Disclaimer missing required phrase: $phrase"
+              exit 1
+            }
+          }
+          if ($report.eligible -isnot [bool]) {
+            Write-Error "eligible must be boolean"
+            exit 1
+          }
+          if ([string]::IsNullOrWhiteSpace([string]$report.reason)) {
+            Write-Error "reason must be non-empty"
+            exit 1
+          }
+          foreach ($fact in 'physicalConsoleSessionId','processSessionId','connectState','protocolType','desktopCategory','observationStable','wtsQuerySucceeded','desktopQuerySucceeded') {
+            if ($null -eq $report.facts.PSObject.Properties[$fact]) {
+              Write-Error "Missing facts field: $fact"
+              exit 1
+            }
+          }
+          # Shape only: CI may have no physical console, so eligible is not asserted true.
+          Write-Host "ConsoleProbe result shape OK (eligible=$($report.eligible) reason=$($report.reason))"
+
+      - name: Stage ConsoleProbe artifact
+        shell: pwsh
+        run: |
+          Copy-Item "src/Helicoid.ConsoleProbe/README.md" "artifacts/console-probe/README.md" -ErrorAction Stop
+
+      - name: Upload ConsoleProbe diagnostic artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: helicoid-windows-console-probe
+          path: artifacts/console-probe/
           if-no-files-found: error
           retention-days: 14
