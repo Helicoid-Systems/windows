@@ -78,6 +78,24 @@ public class DevelopmentLaunchOptionsTests
     }
 
     [Fact]
+    public void LauncherBundleExactArgs_EnableDevelopmentLoopback()
+    {
+        // Exact argument pair forwarded by scripts/start-development-manager.cmd.
+        var options = DevelopmentLaunchOptions.Parse(new[]
+        {
+            "--development-server=http://127.0.0.1:8787",
+            "--development-manager-identity",
+            "dev-manager-key",
+        });
+
+        Assert.True(options.DevelopmentServerEnabled);
+        Assert.Equal("http://127.0.0.1:8787", options.DevelopmentServerAddress);
+        Assert.Equal("dev-manager-key", options.DevelopmentManagerIdentity);
+        using var client = (DevelopmentServerClient)options.CreateClient();
+        Assert.Equal(new Uri("http://127.0.0.1:8787/"), client.BaseAddress);
+    }
+
+    [Fact]
     public void DevelopmentServer_RefusesRemoteAddress()
     {
         var options = DevelopmentLaunchOptions.Parse(new[]
