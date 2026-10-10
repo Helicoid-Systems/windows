@@ -230,3 +230,23 @@ The user confirmed the already-published app pair launches, the development
 server launcher works, and Manager sign-in works when explicitly launched with
 development switches. The new CMD wrapper itself still requires a Windows
 runtime check. Full console/RDP/lock and navigation matrices remain unverified.
+
+## Supplied Windows role icons, 10 October 2026
+
+The user's four exact PNG/SVG sources are retained in `branding/source`, with
+byte hashes in `branding/PROVENANCE.json`. Manager uses the supplied blue icon;
+Computer uses the supplied dark icon. Each ICO has 16,24,32,48,64,128,256 entries
+from full-frame downsampling. Mac artwork is unchanged. `ApplicationIcon` embeds
+the role resource and `AppWindow.SetIcon` uses a published sibling ICO.
+
+Fresh source/hash/ICO verification passes. A disposable real C# compiler PE
+fixture passes all seven referenced group payload checks; corrupting one group
+resource ID is rejected. Windows CI now checks both actual published executables
+and sibling ICOs. Native WinUI build and visible Explorer/taskbar rendering are
+pending this revision's Windows CI and user check.
+
+The user's original ConsoleProbe returned eligible twice on the unlocked PC,
+but also returned eligible in the reported Win+L test. The lock refusal matrix
+therefore FAILED for that candidate. WTSActive/Default alone are insufficient;
+a separate session-lock query repair is in progress. This probe has no capture,
+input, enrollment or production authorization integration.

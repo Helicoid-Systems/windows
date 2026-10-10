@@ -27,11 +27,19 @@
     <AssemblyTitle>Helicoid Manager</AssemblyTitle>
     <Product>Helicoid</Product>
     <Company>Helicoid Systems</Company>
+    <!-- Role-specific Explorer PE icon from branding/generated. -->
+    <ApplicationIcon>..\..\branding\generated\hs-manager-windowsicon.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="Assets\brand\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <!-- Staged beside the published exe for AppWindow.SetIcon (AppContext.BaseDirectory). -->
+    <Content Include="..\..\branding\generated\hs-manager-windowsicon.ico">
+      <Link>hs-manager-windowsicon.ico</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
 
