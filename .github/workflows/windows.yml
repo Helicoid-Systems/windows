@@ -76,6 +76,10 @@ jobs:
 
       # --- ConsoleProbe: independent build, publish, shape check, artifact ---
 
+      - name: Verify numeric WTS decoder layout against Windows SDK
+        shell: pwsh
+        run: ./scripts/test-wts-layout.ps1
+
       - name: Build Helicoid.ConsoleProbe
         run: dotnet build src/Helicoid.ConsoleProbe/Helicoid.ConsoleProbe.csproj -c Release --nologo
 
