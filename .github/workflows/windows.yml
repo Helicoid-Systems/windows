@@ -52,6 +52,10 @@ jobs:
           dotnet publish src/Helicoid.Manager/Helicoid.Manager.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/manager
           dotnet publish src/Helicoid.Computer/Helicoid.Computer.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/computer
 
+      - name: Verify supplied Windows icon resources
+        shell: pwsh
+        run: python scripts/verify-windows-icons.py --manager-publish artifacts/manager --computer-publish artifacts/computer
+
       - name: Stage development launcher beside Manager
         shell: pwsh
         run: |
