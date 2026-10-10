@@ -287,13 +287,13 @@ Host: macOS (Darwin), arm64 — **not a Windows runtime**. SDK:
 | Check | Command | Result |
 | --- | --- | --- |
 | Domain tests (locked suite) | `dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release` | **PASS** — 292 tests, 0 failed |
-| Integration project (portable facts) | `dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release` | **PASS** — 10 passed, **30 skipped** (real xUnit skip: `Requires Windows runtime`) |
+| Integration project (portable facts) | `dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release` | **PASS** — 10 passed, **35 skipped** (real xUnit skip: `Requires Windows runtime`) |
 | CaptureWorker build | `dotnet build src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj -c Release` | **PASS** — 0 warnings, 0 errors |
 | Worker surface audit | `rg` for capture/input/network APIs | **PASS** — none in `Helicoid.CaptureWorker` + `Helicoid.Domain/Worker` |
 | Role icons preserved | `shasum -a 256` | **PASS** — `HS App icon.icon/icon.json` = `ae154c55…` (both apps) |
 | Workflow YAML | `ruby -ryaml -e YAML.load_file(...)` | **PASS** |
 
-The 30 skipped tests are `[WindowsFact]`/`[WindowsTheory]` and are **not**
+The 35 skipped tests are `[WindowsFact]`/`[WindowsTheory]` and are **not**
 native proof. They execute on Windows CI only.
 
 ### What this revision added
@@ -331,3 +331,58 @@ builds → unsigned development publish → icon verification → launcher tests
 metadata-only worker publish + SHA256SUMS → worker IPC admission checks
 (no-env / missing-fence / malformed-fence → exit 1) → ConsoleProbe steps →
 Windows-native integration tests staged with real `Helicoid.CaptureWorker.exe`.
+
+---
+
+## Native IPC hang diagnosis, 10 October 2026
+
+**Trigger:** CI run `38083093481` (commit `478d010`) built both apps, worker,
+probe and domain tests successfully, but the real IPC integration tests had
+been **running since 20:21:42 UTC** with no completion (observed 20:43 UTC).
+That is a **FAILED/stalled verification**, not accepted native proof.
+
+### Source-evidenced defects repaired
+
+| Defect | Location | Fix |
+| --- | --- | --- |
+| Unbounded write: `SendHandshakeResponseAsync` → `TrySendMessageAsync(msg)` with **no token** | `IpcChannel.cs` supervisor | Every write bounded by `MaxWriteTimeout` (5s) + dispose CTS; `TrySendMessage` takes an explicit timeout |
+| Unbounded write: worker `TrySendMessage` → `TrySendMessageAsync(message)` with no token | `IpcChannel.cs` worker | Same bound + dispose CTS |
+| Unbounded write: `ct = default` (`CancellationToken.None`) reached `WriteAsync`/`FlushAsync` | both channels | `CancelAfter(MaxWriteTimeout)` always applied even when `ct` is unsignaled |
+| Early identity rejects returned without a handshake response, leaving the peer waiting | supervisor handshake | `TrySendBoundedRejectAsync` sends a best-effort bounded reject on PID/session/SID failure |
+| Disposal did not cancel in-flight I/O | both `Dispose` methods | `_disposeCts.Cancel()` first; connect/read/write link to it |
+| Server comment claimed `CurrentUserOnly` but flag was **not set** | `PipeOptions` | `PipeOptions.Asynchronous \| PipeOptions.CurrentUserOnly` now set explicitly |
+| Tests awaited counterpart tasks unbounded | integration tests | `AwaitBoundedAsync` (hard 5–15s bound → `TimeoutException`); early-reject sites use `AwaitAfterRejectAsync` (observe briefly, never hang) |
+| CI staged **only the exe apphost** beside the test assembly | workflow | Stages the complete runtime bundle: `exe`, `dll`, `deps.json`, `runtimeconfig.json`, `Helicoid.WindowsPlatform.dll`, `Helicoid.Domain.dll` — each verified present |
+| No CI hang bound | workflow | Job `timeout-minutes: 45`; step timeouts; `--blame-hang --blame-hang-timeout 5m`; TRX results; `if: always()` upload of `artifacts/test-results/` |
+
+### ACL / session-0 note
+
+`PipeOptions.CurrentUserOnly` restricts the ACL to the creating user. Remote
+and cross-user clients are denied by the kernel. **A session-0 service
+supervisor that must accept a distinct user-worker SID cannot rely on
+CurrentUserOnly alone** — that deployment requires an explicit `PipeSecurity`
+ACL granting only the worker SID. Current code is correct for same-user
+supervisor/worker; the service case is documented and pending a real service
+host. Physical-console eligibility requirements were **not** relaxed.
+
+### Native regressions added
+
+`IpcWrite_SilentPeer_BoundedNotHung`, `IpcChannel_Dispose_CancelsPendingConnect`,
+`IpcWorker_Dispose_CancelsPendingConnect`, `IpcRead_PeerDisconnect_ReturnsDisconnectedNotHang`,
+`SupervisorIpcChannel_PipeIsCurrentUserOnly` — all `[WindowsFact]` (skip on
+non-Windows).
+
+### Portable checks (this host)
+
+| Check | Result |
+| --- | --- |
+| Domain tests | **292 passed, 0 failed** |
+| Integration (portable facts) | **10 passed, 35 skipped** (real xUnit skip) |
+| CaptureWorker build | 0 warnings/errors |
+| Worker runtime bundle contents | exe + dll + deps.json + runtimeconfig.json + WindowsPlatform.dll + Domain.dll present |
+| Capture/input/network surface | **None** in worker path |
+| Workflow YAML | parses |
+
+**Not claimed:** native Windows runtime proof. The stalled CI run is **not**
+accepted as verification. A fresh Windows CI run with the bounded diagnostics
+is required.

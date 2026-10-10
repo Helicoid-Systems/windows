@@ -82,6 +82,9 @@ public enum IpcReadResult
 /// </summary>
 public sealed class SupervisorIpcChannel : IDisposable
 {
+    /// <summary>Upper bound on any single write so a silent peer cannot stall I/O.</summary>
+    private static readonly TimeSpan MaxWriteTimeout = TimeSpan.FromSeconds(5);
+
     private readonly string _pipeName;
     private readonly LaunchCapability _capability;
     private readonly FencingIds _fence;
@@ -90,6 +93,7 @@ public sealed class SupervisorIpcChannel : IDisposable
     private readonly uint _expectedChildSessionId;
     private readonly string _expectedChildSid;
     private NamedPipeServerStream? _pipeStream;
+    private readonly CancellationTokenSource _disposeCts = new();
     private bool _disposed;
 
     /// <summary>
@@ -160,8 +164,9 @@ public sealed class SupervisorIpcChannel : IDisposable
 
     /// <summary>
     /// Create the named pipe and wait for a single authenticated connection.
-    /// Uses NamedPipeServerStream with CurrentUserOnly for restrictive ACL.
-    /// Returns the authenticated result.
+    /// The pipe is restricted to the current user via
+    /// <see cref="PipeOptions.CurrentUserOnly"/>; remote clients and other
+    /// users are denied at the ACL. Returns the authenticated result.
     /// </summary>
     public async Task<IpcAuthenticationResult> WaitForAuthenticatedConnectionAsync(
         TimeSpan timeout,
@@ -171,17 +176,20 @@ public sealed class SupervisorIpcChannel : IDisposable
 
         try
         {
-            // Single-instance message pipe. .NET creates the server with a
-            // current-user-only ACL by default; remote clients are rejected.
+            // Single-instance message pipe. CurrentUserOnly restricts the ACL
+            // to the creating user; remote clients are denied by the kernel.
+            // A session-0 service supervisor that must accept a distinct user
+            // worker SID cannot use CurrentUserOnly alone — that deployment
+            // requires an explicit PipeSecurity ACL granting only that SID.
             _pipeStream = new NamedPipeServerStream(
                 _pipeName,
                 PipeDirection.InOut,
                 1, // Single instance.
                 PipeTransmissionMode.Message,
-                PipeOptions.Asynchronous);
+                PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
 
             // Wait for connection with timeout.
-            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
             connectCts.CancelAfter(timeout);
 
             await _pipeStream.WaitForConnectionAsync(connectCts.Token).ConfigureAwait(false);
@@ -190,33 +198,38 @@ public sealed class SupervisorIpcChannel : IDisposable
             uint clientPid = GetClientProcessId();
             if (clientPid == 0)
             {
+                await TrySendBoundedRejectAsync(HandshakeResponsePayload.ReasonProcessMismatch).ConfigureAwait(false);
                 return IpcAuthenticationResult.TransportFailure;
             }
 
             if (_expectedChildPid == 0 || clientPid != _expectedChildPid)
             {
+                await TrySendBoundedRejectAsync(HandshakeResponsePayload.ReasonProcessMismatch).ConfigureAwait(false);
                 return IpcAuthenticationResult.ProcessMismatch;
             }
 
             // Verify client session ID from kernel ProcessIdToSessionId.
             if (!WtsNative.ProcessIdToSessionId(clientPid, out uint clientSessionId))
             {
+                await TrySendBoundedRejectAsync(HandshakeResponsePayload.ReasonSessionMismatch).ConfigureAwait(false);
                 return IpcAuthenticationResult.TransportFailure;
             }
 
             if (clientSessionId != _expectedChildSessionId)
             {
+                await TrySendBoundedRejectAsync(HandshakeResponsePayload.ReasonSessionMismatch).ConfigureAwait(false);
                 return IpcAuthenticationResult.SessionMismatch;
             }
 
             // Verify client token SID from kernel OpenProcessToken.
             if (!TryVerifyProcessTokenSid(clientPid))
             {
+                await TrySendBoundedRejectAsync(HandshakeResponsePayload.ReasonTokenMismatch).ConfigureAwait(false);
                 return IpcAuthenticationResult.TokenMismatch;
             }
 
             // Read handshake request from worker.
-            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
             readCts.CancelAfter(timeout);
 
             var readResult = await TryReadMessageAsync(readCts.Token).ConfigureAwait(false);
@@ -305,7 +318,10 @@ public sealed class SupervisorIpcChannel : IDisposable
     }
 
     /// <summary>
-    /// Send a message to the connected worker.
+    /// Send a message to the connected worker. Every write is bounded: a
+    /// silent or wedged peer cannot stall the caller. If
+    /// <paramref name="ct"/> is unsignaled, <see cref="MaxWriteTimeout"/>
+    /// still applies.
     /// </summary>
     public async Task<bool> TrySendMessageAsync(IpcMessage message, CancellationToken ct = default)
     {
@@ -313,17 +329,31 @@ public sealed class SupervisorIpcChannel : IDisposable
         if (_pipeStream is null || !_pipeStream.IsConnected) return false;
 
         byte[] frame = message.Serialize();
-        await _pipeStream.WriteAsync(frame, ct).ConfigureAwait(false);
-        await _pipeStream.FlushAsync(ct).ConfigureAwait(false);
-        return true;
+        using var writeCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _disposeCts.Token);
+        writeCts.CancelAfter(MaxWriteTimeout);
+        try
+        {
+            await _pipeStream.WriteAsync(frame, writeCts.Token).ConfigureAwait(false);
+            await _pipeStream.FlushAsync(writeCts.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
-    /// Synchronous wrapper for TrySendMessage.
+    /// Synchronous wrapper for TrySendMessage. Always bounded by the timeout.
     /// </summary>
     public bool TrySendMessage(IpcMessage message, TimeSpan timeout)
     {
-        using var cts = new CancellationTokenSource(timeout);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(_disposeCts.Token);
+        cts.CancelAfter(timeout <= TimeSpan.Zero || timeout > MaxWriteTimeout ? MaxWriteTimeout : timeout);
         return TrySendMessageAsync(message, cts.Token).GetAwaiter().GetResult();
     }
 
@@ -447,7 +477,24 @@ public sealed class SupervisorIpcChannel : IDisposable
         return (IpcReadResult.Success, read);
     }
 
-    private async Task SendHandshakeResponseAsync(bool accepted, byte reason)
+    /// <summary>
+    /// Bounded best-effort reject used on early-identity failures so the peer
+    /// is not left waiting for a handshake reply that never comes. Never
+    /// throws; a silent peer only burns at most <see cref="MaxWriteTimeout"/>.
+    /// </summary>
+    private async Task TrySendBoundedRejectAsync(byte reason)
+    {
+        try
+        {
+            await SendHandshakeResponseAsync(false, reason, _disposeCts.Token).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Best-effort only — the reject path must not throw.
+        }
+    }
+
+    private async Task SendHandshakeResponseAsync(bool accepted, byte reason, CancellationToken ct = default)
     {
         var response = new HandshakeResponsePayload
         {
@@ -464,7 +511,7 @@ public sealed class SupervisorIpcChannel : IDisposable
             Payload = response.Serialize(),
         };
 
-        await TrySendMessageAsync(msg).ConfigureAwait(false);
+        await TrySendMessageAsync(msg, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -521,9 +568,12 @@ public sealed class SupervisorIpcChannel : IDisposable
         if (!_disposed)
         {
             _disposed = true;
+            // Cancel in-flight I/O first so pending reads/writes unblock.
+            try { _disposeCts.Cancel(); } catch (ObjectDisposedException) { }
             Disconnect();
             _pipeStream?.Dispose();
             _pipeStream = null;
+            _disposeCts.Dispose();
         }
     }
 }
@@ -540,6 +590,9 @@ public sealed class SupervisorIpcChannel : IDisposable
 /// </summary>
 public sealed class WorkerIpcChannel : IDisposable
 {
+    /// <summary>Upper bound on any single write so a silent peer cannot stall I/O.</summary>
+    private static readonly TimeSpan MaxWriteTimeout = TimeSpan.FromSeconds(5);
+
     private readonly string _pipeName;
     private readonly LaunchCapability _capability;
     private readonly uint _expectedServerPid;
@@ -548,6 +601,7 @@ public sealed class WorkerIpcChannel : IDisposable
     private readonly FencingIds _fence;
     private readonly uint _generation;
     private NamedPipeClientStream? _pipeStream;
+    private readonly CancellationTokenSource _disposeCts = new();
     private bool _disposed;
 
     /// <summary>
@@ -619,7 +673,7 @@ public sealed class WorkerIpcChannel : IDisposable
                 PipeDirection.InOut,
                 PipeOptions.Asynchronous);
 
-            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _disposeCts.Token);
             connectCts.CancelAfter(timeout);
 
             await _pipeStream.ConnectAsync((int)timeout.TotalMilliseconds, connectCts.Token).ConfigureAwait(false);
@@ -679,7 +733,7 @@ public sealed class WorkerIpcChannel : IDisposable
             }
 
             // Read handshake response.
-            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            using var readCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _disposeCts.Token);
             readCts.CancelAfter(timeout);
 
             var readResult = await TryReadMessageAsync(readCts.Token).ConfigureAwait(false);
@@ -727,7 +781,9 @@ public sealed class WorkerIpcChannel : IDisposable
     }
 
     /// <summary>
-    /// Send a message to the supervisor (async).
+    /// Send a message to the supervisor (async). Every write is bounded by
+    /// <see cref="MaxWriteTimeout"/>; a silent or wedged peer cannot stall
+    /// the caller.
     /// </summary>
     public async Task<bool> TrySendMessageAsync(IpcMessage message, CancellationToken ct = default)
     {
@@ -735,17 +791,30 @@ public sealed class WorkerIpcChannel : IDisposable
         if (_pipeStream is null || !_pipeStream.IsConnected) return false;
 
         byte[] frame = message.Serialize();
-        await _pipeStream.WriteAsync(frame, ct).ConfigureAwait(false);
-        await _pipeStream.FlushAsync(ct).ConfigureAwait(false);
-        return true;
+        using var writeCts = CancellationTokenSource.CreateLinkedTokenSource(ct, _disposeCts.Token);
+        writeCts.CancelAfter(MaxWriteTimeout);
+        try
+        {
+            await _pipeStream.WriteAsync(frame, writeCts.Token).ConfigureAwait(false);
+            await _pipeStream.FlushAsync(writeCts.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
-    /// Synchronous wrapper for TrySendMessage.
+    /// Synchronous wrapper for TrySendMessage. Always bounded.
     /// </summary>
     public bool TrySendMessage(IpcMessage message)
     {
-        return TrySendMessageAsync(message).GetAwaiter().GetResult();
+        return TrySendMessageAsync(message, _disposeCts.Token).GetAwaiter().GetResult();
     }
 
     private IpcMessage? _lastReadMessage;
@@ -895,8 +964,11 @@ public sealed class WorkerIpcChannel : IDisposable
         if (!_disposed)
         {
             _disposed = true;
+            // Cancel in-flight I/O first so pending reads/writes unblock.
+            try { _disposeCts.Cancel(); } catch (ObjectDisposedException) { }
             _pipeStream?.Dispose();
             _pipeStream = null;
+            _disposeCts.Dispose();
         }
     }
 }
