@@ -143,14 +143,48 @@ jobs:
             Write-Error "reason must be non-empty"
             exit 1
           }
-          foreach ($fact in 'physicalConsoleSessionId','processSessionId','connectState','protocolType','desktopCategory','observationStable','wtsQuerySucceeded','desktopQuerySucceeded') {
+          foreach ($fact in 'physicalConsoleSessionId','processSessionId','connectState','protocolType','desktopCategory','observationStable','wtsQuerySucceeded','desktopQuerySucceeded','lockState','lockQuerySucceeded') {
             if ($null -eq $report.facts.PSObject.Properties[$fact]) {
               Write-Error "Missing facts field: $fact"
               exit 1
             }
           }
+          if ($report.schemaVersion -ne 2 -or $report.facts.lockQuerySucceeded -isnot [bool]) {
+            throw 'Expected repaired probe schema and boolean lockQuerySucceeded'
+          }
+          if ($report.facts.lockState -notin @('Unknown','Locked','Unlocked')) {
+            throw 'Unexpected session lock classification'
+          }
+          # On an observable console, prove the actual extended WTS query works.
+          # This is query correctness; it does not establish the lock matrix.
+          if ($report.facts.wtsQuerySucceeded -and
+              $report.facts.physicalConsoleSessionId -gt 0 -and
+              $report.facts.physicalConsoleSessionId -ne 4294967295 -and
+              $report.facts.physicalConsoleSessionId -eq $report.facts.processSessionId -and
+              $report.facts.connectState -eq 0 -and $report.facts.protocolType -eq 0) {
+            if (-not $report.facts.lockQuerySucceeded) { throw 'Extended WTS query failed on observable console' }
+            Write-Host 'Extended WTS query succeeded on actual observable console'
+          }
           # Shape only: CI may have no physical console, so eligible is not asserted true.
           Write-Host "ConsoleProbe result shape OK (eligible=$($report.eligible) reason=$($report.reason))"
+
+      - name: Check ConsoleProbe sampling mode (metadata only)
+        shell: pwsh
+        run: |
+          $out = & "artifacts/console-probe/Helicoid.ConsoleProbe.exe" --watch | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Sampling mode failed' }
+          $watch = $out | ConvertFrom-Json
+          if ($watch.mode -ne 'lock-watch' -or $watch.sampleCount -ne 31) { throw 'Wrong sampling shape' }
+          $total = ($watch.observations | Measure-Object -Property count -Sum).Sum
+          if ($total -ne 31 -or $watch.elapsedSeconds -lt 30) { throw 'Sampling ended early' }
+          foreach ($segment in $watch.observations) {
+            if ($segment.report.schemaVersion -ne 2) { throw 'Wrong nested report schema' }
+            if ($segment.report.eligible -and
+                ($segment.report.facts.lockState -ne 'Unlocked' -or -not $segment.report.facts.lockQuerySucceeded)) {
+              throw 'Sampling accepted a session without explicit unlocked evidence'
+            }
+          }
+          Write-Host "Sampling mode OK: $total observations, $($watch.observations.Count) grouped states"
 
       - name: Stage ConsoleProbe artifact
         shell: pwsh

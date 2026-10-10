@@ -62,12 +62,26 @@ internal static class PhysicalConsoleObserver
                 return FailurePass(physicalConsole, processSession, connectState);
             }
 
+            if (!TryQueryLockState(physicalConsole, connectState, out WtsSessionLockState lockState))
+            {
+                return new ConsolePassFacts(
+                    new WtsSessionId(physicalConsole),
+                    new WtsSessionId(processSession),
+                    connectState,
+                    protocolType,
+                    WtsQuerySucceeded: true,
+                    LockState: WtsSessionLockState.Unknown,
+                    LockQuerySucceeded: false);
+            }
+
             return new ConsolePassFacts(
                 new WtsSessionId(physicalConsole),
                 new WtsSessionId(processSession),
                 connectState,
                 protocolType,
-                WtsQuerySucceeded: true);
+                WtsQuerySucceeded: true,
+                LockState: lockState,
+                LockQuerySucceeded: true);
         }
         catch (Exception)
         {
@@ -142,6 +156,62 @@ internal static class PhysicalConsoleObserver
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Query WTSINFOEXW.SessionFlags via WTSSessionInfoEx and classify lock
+    /// state. Accepts only a bounded buffer whose numeric header validates
+    /// against the queried session and connect state. Always frees a nonzero
+    /// WTS buffer even when the API reports failure. Never reads or emits
+    /// username / domain / station name strings.
+    /// </summary>
+    private static bool TryQueryLockState(
+        uint sessionId,
+        int expectedConnectState,
+        out WtsSessionLockState lockState)
+    {
+        lockState = WtsSessionLockState.Unknown;
+
+        if (sessionId == WtsSessionId.NoAttachedConsoleSentinel)
+        {
+            return false;
+        }
+
+        bool ok = WtsNative.WTSQuerySessionInformationW(
+            WtsNative.CurrentServerHandle,
+            sessionId,
+            WtsNative.WtsSessionInfoEx,
+            out IntPtr buffer,
+            out uint bytesReturned);
+
+        // Free any nonzero buffer even when the API returns false.
+        if (buffer == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        using var owned = new SafeWtsMemory(buffer);
+
+        if (!ok)
+        {
+            return false;
+        }
+
+        if (bytesReturned != WtsInfoExDecoder.StructBytes)
+        {
+            return false;
+        }
+
+        // Copy only the numeric header; never marshal the trailing strings.
+        byte[] copy = new byte[WtsInfoExDecoder.MinHeaderBytes];
+        Marshal.Copy(buffer, copy, 0, WtsInfoExDecoder.MinHeaderBytes);
+
+        return WtsInfoExDecoder.TryDecodeSessionLock(
+            copy,
+            (int)bytesReturned,
+            sessionId,
+            expectedConnectState,
+            out lockState);
     }
 
     /// <summary>

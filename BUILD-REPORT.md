@@ -250,3 +250,27 @@ but also returned eligible in the reported Win+L test. The lock refusal matrix
 therefore FAILED for that candidate. WTSActive/Default alone are insufficient;
 a separate session-lock query repair is in progress. This probe has no capture,
 input, enrollment or production authorization integration.
+
+Native Windows CI 38058004339 compiled and published both WinUI apps and
+verified their exact referenced PE icon payloads and staged ICO files. The
+source hash step refused checkout-modified SVGs: Windows Git CRLF conversion
+reproduced both wrong hashes exactly. `branding/source/* -text` now preserves
+the canonical source bytes; a forced-autocrlf checkout matches both originals.
+A fresh native CI rerun is required.
+
+## Reviewed lock repair, 10 October 2026
+
+A MiMo-V2.5-Pro agent added independent WTSSessionInfoEx lock observations to
+both WTS passes, safe unknown defaults, sanitized lock-state reporting and
+policy/decoder regressions. Root reproduced an accepted malformed native
+structure size, then required the SDK-verified 232-byte API structure and a
+20-byte copied numeric header. The exact failing compiled decoder probe now
+refuses sizes 20,231,233,512. No identity strings are copied or decoded.
+
+Locked restore and all 210 domain/client/console/decoder tests pass locally;
+ConsoleProbe builds with zero warnings/errors. Schema 2 includes a 30-second
+metadata sampling mode for a pre-started process lock check. Native build,
+query and sampling CI for this repair are pending; the user's actual repaired
+lock/unlock result and RDP matrix remain unverified. The user reports RDP is
+supported but not configured. No capture, input, installation or admission
+integration is enabled.

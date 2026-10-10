@@ -19,6 +19,7 @@ internal static class WtsNative
     // WTS_INFO_CLASS values used here (see wtsapi32.h enumeration order).
     public const int WtsConnectState = 8;
     public const int WtsClientProtocolType = 16;
+    public const int WtsSessionInfoEx = 25;
 
     /// <summary>
     /// Expected byte counts for the primitive buffers this probe reads.
