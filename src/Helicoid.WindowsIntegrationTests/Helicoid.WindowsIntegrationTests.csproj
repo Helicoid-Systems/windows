@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Helicoid.WindowsIntegrationTests</RootNamespace>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- Windows-native integration tests: exercise real named pipes, Job Objects,
+         STARTUPINFOEX, DPAPI, and WTS APIs. Skip on non-Windows. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
+    <ProjectReference Include="..\Helicoid.WindowsPlatform\Helicoid.WindowsPlatform.csproj" />
+    <ProjectReference Include="..\Helicoid.CaptureWorker\Helicoid.CaptureWorker.csproj" />
+  </ItemGroup>
+
+</Project>

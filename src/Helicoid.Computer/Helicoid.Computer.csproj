@@ -49,6 +49,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
+    <ProjectReference Include="..\Helicoid.WindowsPlatform\Helicoid.WindowsPlatform.csproj" />
   </ItemGroup>
 
 </Project>

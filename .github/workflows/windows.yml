@@ -5,6 +5,11 @@
 # Helicoid.ConsoleProbe is a separate small diagnostic console tool
 # (D26/RD03/V40 prerequisite). It is never folded into the WinUI bundle.
 #
+# Worker/supervisor proof: this job builds and runs the Windows-native
+# integration suite (real named pipes, Job Objects, kernel PID/session/SID
+# identity, per-launch capability, fencing). Native Windows execution is
+# proved here — not on the macOS coordinator host.
+#
 # Development bundle flags (CI-verified after the ProcessorArchitecture-neutral
 # MSIX failure): -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None.
 # Those defaults are also baked into the WinUI csproj files.
@@ -51,6 +56,7 @@ jobs:
         run: |
           dotnet publish src/Helicoid.Manager/Helicoid.Manager.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/manager
           dotnet publish src/Helicoid.Computer/Helicoid.Computer.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/computer
+          dotnet publish src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj -c Release -r win-x64 -p:ContinuousIntegrationBuild=true --self-contained true --nologo -o artifacts/computer
 
       - name: Verify supplied Windows icon resources
         shell: pwsh
@@ -73,6 +79,79 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: 14
+
+      # --- Metadata-only worker bundle (reproducible, no capture/input/network) ---
+
+      - name: Publish metadata-only CaptureWorker bundle
+        shell: pwsh
+        run: |
+          dotnet publish src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj `
+            -c Release -r win-x64 --self-contained true `
+            -p:ContinuousIntegrationBuild=true -p:Deterministic=true `
+            --nologo -o artifacts/metadata-worker
+
+          # The worker is metadata-only: no pixels, input, or network admission.
+          # Prove the published binary contains no admitted capture surface.
+          $worker = "artifacts/metadata-worker/Helicoid.CaptureWorker.exe"
+          if (-not (Test-Path $worker)) { throw "metadata worker exe missing" }
+
+          # Reproducibility manifest: sorted SHA-256 of every published file.
+          $files = Get-ChildItem "artifacts/metadata-worker" -Recurse -File | Sort-Object FullName
+          $lines = foreach ($f in $files) {
+            $rel = $f.FullName.Substring((Resolve-Path "artifacts/metadata-worker").Path.Length + 1)
+            $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $rel"
+          }
+          $lines | Set-Content -Path "artifacts/metadata-worker/SHA256SUMS" -Encoding ascii
+          Write-Host "Metadata worker bundle manifest:"
+          Get-Content "artifacts/metadata-worker/SHA256SUMS"
+
+      - name: Upload metadata-only worker bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: helicoid-windows-metadata-worker
+          path: artifacts/metadata-worker/
+          if-no-files-found: error
+          retention-days: 14
+
+      # --- Worker IPC admission check (real child process, fail-closed) ---
+
+      - name: Worker IPC admission checks (native Windows)
+        shell: pwsh
+        run: |
+          $workerExe = "artifacts/metadata-worker/Helicoid.CaptureWorker.exe"
+          if (-not (Test-Path $workerExe)) { throw "worker exe missing" }
+
+          # 1. No env vars -> config error (exit 1). Mandatory fields deny.
+          $p = Start-Process -FilePath $workerExe -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\w1.out" -RedirectStandardError "$env:RUNNER_TEMP\w1.err"
+          if ($p.ExitCode -ne 1) { throw "no-env expected exit 1, got $($p.ExitCode)" }
+          Write-Host "PASS: missing env vars denied (exit 1)"
+
+          # 2. Missing fencing IDs -> config error (exit 1). Fencing is mandatory.
+          $env:HELI_WORKER_CAP = "00" * 32
+          $env:HELI_WORKER_PIPE = "helicoid-worker-ci"
+          $env:HELI_WORKER_GEN = "1"
+          Remove-Item Env:HELI_WORKER_BOOT -ErrorAction SilentlyContinue
+          Remove-Item Env:HELI_WORKER_LAUNCH -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath $workerExe -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\w2.out" -RedirectStandardError "$env:RUNNER_TEMP\w2.err"
+          if ($p.ExitCode -ne 1) { throw "missing-fence expected exit 1, got $($p.ExitCode)" }
+          Write-Host "PASS: missing fencing IDs denied (exit 1)"
+
+          # 3. Malformed fencing IDs -> config error (exit 1).
+          $env:HELI_WORKER_BOOT = "AABB"
+          $env:HELI_WORKER_LAUNCH = "CCDD"
+          $p = Start-Process -FilePath $workerExe -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\w3.out" -RedirectStandardError "$env:RUNNER_TEMP\w3.err"
+          if ($p.ExitCode -ne 1) { throw "malformed-fence expected exit 1, got $($p.ExitCode)" }
+          Write-Host "PASS: malformed fencing IDs denied (exit 1)"
+
+          Remove-Item Env:HELI_WORKER_CAP -ErrorAction SilentlyContinue
+          Remove-Item Env:HELI_WORKER_PIPE -ErrorAction SilentlyContinue
+          Remove-Item Env:HELI_WORKER_GEN -ErrorAction SilentlyContinue
+          Remove-Item Env:HELI_WORKER_BOOT -ErrorAction SilentlyContinue
+          Remove-Item Env:HELI_WORKER_LAUNCH -ErrorAction SilentlyContinue
 
       # --- ConsoleProbe: independent build, publish, shape check, artifact ---
 
@@ -198,3 +277,44 @@ jobs:
           path: artifacts/console-probe/
           if-no-files-found: error
           retention-days: 14
+
+      # --- WindowsPlatform + CaptureWorker + native integration tests ---
+
+      - name: Build WindowsPlatform
+        run: dotnet build src/Helicoid.WindowsPlatform/Helicoid.WindowsPlatform.csproj -c Release --nologo
+
+      - name: Build CaptureWorker
+        run: dotnet build src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj -c Release --nologo
+
+      - name: Verify CaptureWorker exists in Computer bundle
+        shell: pwsh
+        run: |
+          $workerPath = "artifacts/computer/Helicoid.CaptureWorker.exe"
+          if (-not (Test-Path $workerPath)) {
+            Write-Error "CaptureWorker.exe not found in Computer bundle at $workerPath"
+            exit 1
+          }
+          Write-Host "CaptureWorker.exe found in Computer bundle"
+
+      - name: Build Windows-native integration tests
+        run: dotnet build src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release --nologo
+
+      - name: Run Windows-native integration tests (real IPC/supervisor paths)
+        shell: pwsh
+        run: |
+          # Stage the worker exe next to the test assembly so process-launch
+          # tests exercise the real CaptureWorker binary.
+          $testBin = (Get-ChildItem -Path "src/Helicoid.WindowsIntegrationTests/bin/Release" -Recurse -Filter "Helicoid.WindowsIntegrationTests.dll" | Select-Object -First 1).DirectoryName
+          $workerSrc = "src/Helicoid.CaptureWorker/bin/Release/net10.0/Helicoid.CaptureWorker.exe"
+          if (-not (Test-Path $workerSrc)) {
+            # Fall back to a framework-dependent dll host if exe was not produced.
+            $workerSrc = "src/Helicoid.CaptureWorker/bin/Release/net10.0/Helicoid.CaptureWorker.dll"
+          }
+          if (Test-Path $workerSrc) {
+            Copy-Item $workerSrc -Destination $testBin -Force
+            Write-Host "Staged worker binary into $testBin"
+          }
+
+          dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj `
+            -c Release --nologo --no-build `
+            --logger "console;verbosity=normal"

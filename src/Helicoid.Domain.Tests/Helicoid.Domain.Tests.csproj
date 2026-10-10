@@ -21,10 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
-    <!-- Test the exact portable decoder used by the native query seam. -->
-    <Compile Include="..\Helicoid.ConsoleProbe\Native\DesktopNameReader.cs" Link="Native\DesktopNameReader.cs" />
-    <Compile Include="..\Helicoid.ConsoleProbe\Native\DesktopNative.cs" Link="Native\DesktopNative.cs" />
-    <Compile Include="..\Helicoid.ConsoleProbe\Native\WtsInfoExDecoder.cs" Link="Native\WtsInfoExDecoder.cs" />
+    <ProjectReference Include="..\Helicoid.WindowsPlatform\Helicoid.WindowsPlatform.csproj" />
   </ItemGroup>
 
 </Project>

@@ -89,6 +89,12 @@
       },
       "helicoid.domain": {
         "type": "Project"
+      },
+      "helicoid.windowsplatform": {
+        "type": "Project",
+        "dependencies": {
+          "Helicoid.Domain": "[1.0.0, )"
+        }
       }
     }
   }

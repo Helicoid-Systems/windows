@@ -23,6 +23,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
@@ -34,8 +35,14 @@
             <TextBlock x:Name="OperatorText" Text="Connected. No active screen access" Style="{StaticResource BodyTextBlockStyle}" />
         </StackPanel>
 
+        <StackPanel Grid.Row="2" Spacing="4">
+            <TextBlock x:Name="SupervisorText" Text="Supervisor: No supervisor" Style="{StaticResource BodyTextBlockStyle}" />
+            <TextBlock x:Name="WorkerText" Text="Worker: No worker" Style="{StaticResource BodyTextBlockStyle}" />
+            <TextBlock x:Name="GenerationText" Text="Generation: 0" Style="{StaticResource CaptionTextBlockStyle}" />
+        </StackPanel>
+
         <InfoBar
-            Grid.Row="2"
+            Grid.Row="3"
             x:Name="AccessInfo"
             IsOpen="True"
             Severity="Informational"
@@ -43,13 +50,13 @@
             Message="No active screen access" />
 
         <InfoBar
-            Grid.Row="3"
+            Grid.Row="4"
             IsOpen="True"
             Severity="Informational"
             Title="Stopping remote control"
             Message="The computer user cannot stop remote control from this app. The controlling operator or authorized IT can stop it, and security teardown still applies automatically." />
 
-        <StackPanel Grid.Row="4" Spacing="8">
+        <StackPanel Grid.Row="5" Spacing="8">
             <TextBlock Text="Available actions" Style="{StaticResource SubtitleTextBlockStyle}" />
             <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button x:Name="RequestHelpButton" Content="Request Help" IsEnabled="False" />
@@ -62,7 +69,7 @@
         </StackPanel>
 
         <TextBlock
-            Grid.Row="5"
+            Grid.Row="6"
             Text="Developed by Helicoid Systems"
             Style="{StaticResource CaptionTextBlockStyle}"
             HorizontalAlignment="Center" />

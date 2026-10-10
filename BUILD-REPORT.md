@@ -274,3 +274,60 @@ query and sampling CI for this repair are pending; the user's actual repaired
 lock/unlock result and RDP matrix remain unverified. The user reports RDP is
 supported but not configured. No capture, input, installation or admission
 integration is enabled.
+
+---
+
+## Worker / supervisor admission prerequisite, 10 October 2026
+
+Host: macOS (Darwin), arm64 — **not a Windows runtime**. SDK:
+`/tmp/hs-toolchain/dotnet` (.NET 10.0.401).
+
+### Verified on this host (portable / fixture proof only)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Domain tests (locked suite) | `dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release` | **PASS** — 292 tests, 0 failed |
+| Integration project (portable facts) | `dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release` | **PASS** — 10 passed, **30 skipped** (real xUnit skip: `Requires Windows runtime`) |
+| CaptureWorker build | `dotnet build src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj -c Release` | **PASS** — 0 warnings, 0 errors |
+| Worker surface audit | `rg` for capture/input/network APIs | **PASS** — none in `Helicoid.CaptureWorker` + `Helicoid.Domain/Worker` |
+| Role icons preserved | `shasum -a 256` | **PASS** — `HS App icon.icon/icon.json` = `ae154c55…` (both apps) |
+| Workflow YAML | `ruby -ryaml -e YAML.load_file(...)` | **PASS** |
+
+The 30 skipped tests are `[WindowsFact]`/`[WindowsTheory]` and are **not**
+native proof. They execute on Windows CI only.
+
+### What this revision added
+
+- Mandatory boot ID, launch ID, session/user identity (PID + WTS session +
+  token SID), and desktop generation on both handshake sides. Missing,
+  malformed, or zero fields deny — never best-effort.
+- Mutual named-pipe kernel identity (PID + session + SID) on both sides.
+- Per-launch capability nonce (32 bytes) with constant-time comparison.
+- Job Object `KILL_ON_JOB_CLOSE` + `PROC_THREAD_ATTRIBUTE_JOB_LIST` atomic bind.
+- Bounded liveness: `HeartbeatInterval` + `HeartbeatTimeout` (timeout must
+  strictly exceed interval; validated positive bounded timing).
+- Fenced async callbacks: lock/logoff/console replacement/disconnect fence
+  current work; a stale callback cannot act on a replacement.
+- Bounded framing; unknown message types and unknown work operations fail
+  closed (worker exit code 5).
+- `DesktopGeneration` never wraps: exhaustion at `uint.MaxValue` fences and
+  blocks restart.
+- `MainWindow.StartTestMode` captures the exact supervisor instance; delayed
+  startup against a disposed supervisor fails quietly and does not launch.
+- Metadata-only CaptureWorker bundle with `SHA256SUMS` reproducibility
+  manifest on Windows CI.
+
+### NOT VERIFIED on this host
+
+Named pipes, Job Objects, `CreateProcessW`, WTS, and token SID reads did not
+run here. WinUI compile is CI-only (`NETSDK1100` on macOS). No pixels, input,
+or network admission exists — by design, pending a real core/transport
+contract.
+
+### Windows-native CI (pending confirmation)
+
+`windows.yml` on `windows-latest` runs: locked domain tests → Manager/Computer
+builds → unsigned development publish → icon verification → launcher tests →
+metadata-only worker publish + SHA256SUMS → worker IPC admission checks
+(no-env / missing-fence / malformed-fence → exit 1) → ConsoleProbe steps →
+Windows-native integration tests staged with real `Helicoid.CaptureWorker.exe`.

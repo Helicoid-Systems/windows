@@ -16,7 +16,13 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Native sources extracted to Helicoid.WindowsPlatform; exclude local copies. -->
+    <Compile Remove="Native\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
+    <ProjectReference Include="..\Helicoid.WindowsPlatform\Helicoid.WindowsPlatform.csproj" />
   </ItemGroup>
 
 </Project>
