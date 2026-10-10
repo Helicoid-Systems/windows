@@ -17,6 +17,8 @@ Product identity: Helicoid, from Helicoid Systems. Durable package and service i
 
 WinUI projects target `net10.0-windows10.0.19041.0` and use Windows App SDK 2.5.1. They require a Windows host.
 
+Development bundle defaults (CI-verified): `Platform=x64`, `RuntimeIdentifier=win-x64`, `WindowsPackageType=None`, self-contained. Packaged .NET apps cannot be ProcessorArchitecture neutral; these pins avoid that MSIX failure. Override on the command line only with the same values.
+
 ## Build and test
 
 ### Domain and tests (macOS and Windows)

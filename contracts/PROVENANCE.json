@@ -4,8 +4,8 @@
   "sourcePath": "modules/server/contracts/http-v1.md",
   "sourceOwner": "modules/server",
   "contractVersion": 1,
-  "sha256": "20a3e649561e367651cf9847a2bc8e41be393660505b30452e7a3ff2350f28d5",
-  "bytes": 10581,
+  "sha256": "09dbc30f7dd39dc051ba037aa3059caca7bed92a6f78ce0a5e2d4c6a9ef75b2e",
+  "bytes": 11834,
   "notes": [
     "Byte-identical copy so this app tree builds and tests without a sibling main checkout.",
     "Clients integrate against this file and do not invent additional fields.",

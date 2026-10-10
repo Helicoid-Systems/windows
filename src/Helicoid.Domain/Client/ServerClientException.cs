@@ -1,3 +1,5 @@
+using System.Net;
+
 namespace Helicoid.Domain.Client;
 
 /// <summary>
@@ -57,9 +59,7 @@ public static class LoopbackAddress
 
         var trimmed = host.Trim().Trim('[', ']');
         return trimmed.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Equals("127.0.0.1", StringComparison.Ordinal)
-            || trimmed.Equals("::1", StringComparison.Ordinal)
-            || trimmed.StartsWith("127.", StringComparison.Ordinal);
+            || (IPAddress.TryParse(trimmed, out var address) && IPAddress.IsLoopback(address));
     }
 
     /// <summary>
@@ -109,15 +109,20 @@ public static class LoopbackAddress
         return CanonicalizeLoopback(baseAddress);
     }
 
-    /// <summary>Rewrite localhost/::1 names to 127.0.0.1 before resolution.</summary>
+    /// <summary>Rewrite localhost to a literal loopback address before resolution.</summary>
     public static Uri CanonicalizeLoopback(Uri uri)
     {
         ArgumentNullException.ThrowIfNull(uri);
         var host = uri.Host.Trim('[', ']');
-        if (host.Equals("127.0.0.1", StringComparison.Ordinal)
-            || (host.StartsWith("127.", StringComparison.Ordinal) && !host.Equals("localhost", StringComparison.OrdinalIgnoreCase)))
+        if (IPAddress.TryParse(host, out var address) && IPAddress.IsLoopback(address))
         {
             return uri;
+        }
+
+        if (!host.Equals("localhost", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ServerClientException(ServerClientFailure.NotLoopback,
+                "Development server must be a literal loopback address.");
         }
 
         var builder = new UriBuilder(uri)

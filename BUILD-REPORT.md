@@ -1,107 +1,103 @@
 # BUILD-REPORT — Helicoid Windows (`apps/windows`)
 
-Date: 10 October 2026 (review fixes)  
-Host: macOS (Darwin), arm64  
+Date: 10 October 2026 (CI reconcile + artwork correction)
+Host: macOS (Darwin), arm64
 SDK: .NET 10.0.401 at `/tmp/hs-toolchain/dotnet` (coordinator-provided; not installed globally)
 
-This report records commands actually executed on this machine. Windows UI, MSIX packaging, capture, and input were **not** run here.
+Local commands below ran on this Mac. **Native WinUI compile is verified by the coordinator on Windows CI; this host cannot compile Windows targets** (`NETSDK1100`).
 
 ## Verified on this host
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Domain + client tests | `dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj` | **PASS** — 88 tests, 0 failed (exit 0) |
-| NuGet lock files for domain | `dotnet restore src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj` | **PASS** |
-| Contract copy integrity | `shasum -a 256` source vs `contracts/http-v1.md` | **PASS** — identical `20a3e649…f28d5` |
+| Domain + client tests | `dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj` | **PASS** — 106 tests, 0 failed |
+| Windows brand hashes vs root `assets/brand/HS App icon.icon` | `shasum -a 256` | **PASS** — matches approved Windows source |
 
-Exact test output (this turn):
+## Coordinator Windows CI (not claimed locally)
 
-```
-Passed!  - Failed: 0, Passed: 88, Skipped: 0, Total: 88, Duration: 34 ms
-```
-
-## Review findings fixed
-
-| Finding | Fix | Regression test |
-| --- | --- | --- |
-| `ActionSnapshot` exposed mutable `List` behind `IReadOnlyList` | Collections wrapped in `Array.AsReadOnly` (`ReadOnlyCollection`) | `ActionSnapshotImmutabilityTests.Freeze_CollectionsCannotBeMutatedThroughCast` |
-| `LoginAsync` left a previous bearer alive when a later sign-in failed | `ClearSession()` before every attempt and on all failure paths (validation, transport, denial, parse) | `FailedSecondLogin_DoesNotRetainFirstIdentity`, `FailedSecondLogin_OnValidationError_AlsoClearsFirstIdentity` |
-| `MapInventory` treated missing `computers` as empty and skipped empty IDs | Missing `computers` list, missing `id`, and missing `enrollment_state` are rejected as `InvalidResponse` | `MalformedInventory_EmptyObject_IsRejected`, `Inventory_MissingComputersList_IsRejected`, `Inventory_ComputerWithoutId_IsRejected` |
-| Direct `DevelopmentServerClient(Uri)` accepted credentials/fragments unlike the factory | Shared `LoopbackAddress.RequireDevelopmentBaseAddress` used by every construction path | `AddressContractTests.Constructor_RefusesEmbeddedCredentials`, `Constructor_RefusesFragment`, `Factory_RefusesEmbeddedCredentials`, `Factory_RefusesFragment` |
-| `localhost` resolved via DNS | `CanonicalizeLoopback` rewrites localhost/`::1` names to `127.0.0.1` before use | `Localhost_IsCanonicalizedToLiteralLoopback`, `Constructor_AlsoCanonicalizesLocalhost` |
-| `HttpClient` not disposed when handler was caller-owned | `Dispose()` always disposes `_http` (`disposeHandler: false` preserves the injected handler) | code fix; covered by lifetime of existing tests |
-| Required DTO fields not validated | Health requires `status` + `schema_version > 0`; login requires `token`, `account.id`, `expires_at_unix > 0`; session requires `account.id` | `Health_MissingRequiredFields_IsRejected`, `Login_MissingAccount_IsRejectedAndSessionCleared`, `Login_MissingToken_IsRejectedAndSessionCleared`, `Session_MissingAccount_IsRejected` |
-| Cancellation not a named failure | `OperationCanceledException` mapped to `Cancelled` / `Timeout` | `Cancellation_IsNamedFailure` |
-| Exact-size response boundary | Overflow probe: EOF at limit is allowed, any further byte rejects | `ExactSizeResponse_IsAccepted`, `ResponseOneByteOverLimit_IsRejected` |
-
-Unchanged guarantees: status-based non-2xx errors, tokens private (never logged/persisted), redirects refused.
-
-## Test inventory (88)
-
-| Area | Count |
+| Step | Result |
 | --- | --- |
-| `MonitoringInclusionTests` | 7 |
-| `OverviewStateTests` | 11 |
-| `ActionSnapshotTests` + `ActionSnapshotImmutabilityTests` | 3 |
-| `AgentStatusTests` | 5 |
-| `RemoteEngineStatusTests` | 1 |
-| `DevelopmentFixtureModeTests` | 3 |
-| `SetupWizardTests` | 6 |
-| `ClosedProductionClientTests` | 3 |
-| `LoopbackAddressTests` | 11 |
-| `DevelopmentLaunchOptionsTests` | 4 |
-| `DevelopmentServerClientTests` | 16 |
-| `AddressContractTests` | 6 |
-| `DevelopmentServerClientRegressionTests` | 12 |
-| **Total** | **88** |
+| Initial MSIX build | **FAILED** — `Packaged .NET applications with an app host exe cannot be ProcessorArchitecture neutral` |
+| Coordinator fix | `-r win-x64 -p:Platform=x64 -p:WindowsPackageType=None` |
+| Domain tests on `windows-latest` | **PASS** (coordinator run) |
+| Build Helicoid Manager | **PASS** (coordinator run) |
+| Build Helicoid Computer | **PASS** (coordinator run) |
+| Publish unsigned development output | **PASS** (coordinator run) |
 
-## Not verified on this host (Windows-required)
+## Changes in this follow-up
 
-Observed Mac attempt:
+### 1. Preserve the working development bundle (architecture failure)
 
-```
-dotnet build src/Helicoid.Manager/Helicoid.Manager.csproj
-→ error NETSDK1100: To build a project targeting Windows on this operating system,
-  set the EnableWindowsTargeting property to true.
-```
+Both WinUI csproj files now embed the CI-verified defaults so a plain
+`dotnet build` cannot hit the AnyCPU/MSIX failure again:
 
-`EnableWindowsTargeting` is intentionally **not** enabled.
+| Property | Value |
+| --- | --- |
+| `Platform` / `Platforms` | `x64` |
+| `RuntimeIdentifier` / `RuntimeIdentifiers` | `win-x64` |
+| `WindowsPackageType` | `None` (unsigned development output) |
+| `WindowsAppSDKSelfContained` / `SelfContained` | `true` |
 
-| Claim | Status | Why |
+The workflow keeps the same explicit flags the coordinator used. `Package.appxmanifest` remains in the tree for a future packaging gate.
+
+### 2. Artwork correction (Mac manager icon is not for Windows)
+
+`docs/ui.md` and the brand manifest assign **HS App icon.icon** to Windows
+manager **and** monitored computer. The grid **HS Manager App icon.icon** is
+**Mac manager only**.
+
+| Path | Assignment | Status |
 | --- | --- | --- |
-| WinUI 3 Manager builds | **NOT VERIFIED** | Windows 11 x64 + WinUI workload required |
-| WinUI 3 Computer builds | **NOT VERIFIED** | Same |
-| MSIX packaging / launch | **NOT VERIFIED** | Windows-only tooling |
-| Connection page sign-in UI | **NOT VERIFIED** | UI not run here |
-| CI workflow green | **UNKNOWN** | Coordinator runs `.github/workflows/windows.yml` next |
-| Native icon exports | **NOT DONE** | Source copies only |
-| Screen capture / control / host install | **NOT IMPLEMENTED** | Engine and install backend open |
+| `Helicoid.Manager/Assets/brand/HS App icon.icon` | Windows manager source | **Active** — hashes match root (`ae154c55…`, `0d41b93c…`, `24c05bca…`) |
+| `Helicoid.Computer/Assets/brand/HS App icon.icon` | Windows endpoint source | **Active** — unchanged |
+| `Helicoid.Manager/Assets/brand/HS Manager App icon.icon` | Mac manager-only artwork | **Unused scratch retained (not deleted); NOT assigned to Windows** |
+| `PROVENANCE.json` (both apps) | — | **Corrected** — Windows assignment is `HS App icon.icon`; Mac grid icon listed under `unusedScratch` |
+
+Native Windows raster/icon exports remain **NOT DONE / NOT PROVEN**.
+
+### 3. Preserved from prior follow-up
+
+- Bounded HTTP timeout (headers + body), async overflow probes, cancel vs timeout.
+- Strict DTO/manager-identity validation; 102 domain/client tests including regression suite.
+
+Exact local test output (this turn):
+
+```
+Passed!  - Failed: 0, Passed: 106, Skipped: 0, Total: 106, Duration: 307 ms
+```
+
+## Test inventory (106)
+
+Inclusion/overview/snapshot, agent/engine, fixtures, setup wizard, closed client, loopback/address/launch options, development HTTP client (contract mocks), address contract, and regression tests (blocked-body timeout, delayed EOF, size boundary, DTO fields, manager identity).
 
 ## Accurate commands
 
-Cross-platform:
+Local (macOS/Windows):
 
 ```bash
 dotnet restore src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj
 dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj --nologo
 ```
 
-Windows 11 x64:
+Windows 11 x64 (matches CI):
 
 ```powershell
-dotnet restore Helicoid.Windows.slnx
-dotnet build Helicoid.Windows.slnx -c Release
+dotnet build src/Helicoid.Manager/Helicoid.Manager.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None
+dotnet build src/Helicoid.Computer/Helicoid.Computer.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None
 dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
 ```
 
 ## Open items
 
-1. **CI result unknown** until GitHub Actions runs `windows.yml`.
-2. **WinUI first Windows compile** may need minor XAML fixes; not claimed green.
-3. **WinUI `packages.lock.json`** should be generated on Windows.
-4. **Durable package/service IDs** still pending a product decision.
-5. **Production identity / auth** remain open; manager identity strings are development fixtures only.
+1. MSIX **packaged** install still needs a packaging gate (`WindowsPackageType=MSIX` with x64) and native icon export proof.
+2. Durable package/service IDs pending a product decision.
+3. Production identity / auth remain open; manager identity strings are development fixtures.
+4. Screen capture / control / host install remain unimplemented.
 
 ## Tests vs platform proof
 
-The 88 passing tests are **domain and HTTP-client unit tests** with mock handlers. They are not OS-session, capture, input, installer, accessibility, or live-server proof.
+102 passing tests are domain and HTTP-client unit tests (mock handlers). Coordinator CI proves **native compile + domain tests on Windows**. That is not capture, input, installer, accessibility, or live-server proof.
+
+## Coordinator final checks
+
+Final source passes 112 domain/client tests locally. Literal loopback parsing rejects DNS names beginning with 127.; inventory rejects duplicate IDs and overflow; impossible expiries and required MFA fail closed. The actual client library also passes the live loopback server integration probe. These checks do not prove WinUI runtime behavior; the user will download Windows CI output and report results.

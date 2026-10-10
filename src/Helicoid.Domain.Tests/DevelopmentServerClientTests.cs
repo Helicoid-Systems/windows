@@ -1,59 +1,9 @@
 using System.Net;
-using System.Text;
 using Helicoid.Domain.Client;
 using Helicoid.Domain.Model;
 using Xunit;
 
 namespace Helicoid.Domain.Tests;
-
-/// <summary>
-/// Scripted handler for HTTP client tests. Captures requests without logging
-/// Authorization values or credentials.
-/// </summary>
-internal sealed class ScriptedHttpMessageHandler : HttpMessageHandler
-{
-    private readonly Queue<Func<HttpRequestMessage, HttpResponseMessage>> _responders = new();
-
-    public List<HttpRequestMessage> Requests { get; } = new();
-
-    public List<string?> AuthorizationHeaders { get; } = new();
-
-    public void Enqueue(Func<HttpRequestMessage, HttpResponseMessage> responder) =>
-        _responders.Enqueue(responder);
-
-    public void EnqueueJson(HttpStatusCode status, string json, bool withRedirect = false)
-    {
-        Enqueue(_ =>
-        {
-            var response = new HttpResponseMessage(status)
-            {
-                Content = new StringContent(json, Encoding.UTF8, "application/json"),
-            };
-            if (withRedirect)
-            {
-                response.Headers.Location = new Uri("http://example.invalid/escape");
-            }
-
-            return response;
-        });
-    }
-
-    protected override Task<HttpResponseMessage> SendAsync(
-        HttpRequestMessage request,
-        CancellationToken cancellationToken)
-    {
-        // Record only the presence of an Authorization header, never its value.
-        Requests.Add(request);
-        AuthorizationHeaders.Add(request.Headers.Authorization is null ? null : "<present>");
-
-        if (_responders.Count == 0)
-        {
-            throw new InvalidOperationException("No scripted response remains.");
-        }
-
-        return Task.FromResult(_responders.Dequeue()(request));
-    }
-}
 
 public class LoopbackAddressTests
 {
@@ -143,22 +93,14 @@ public class DevelopmentServerClientTests
 {
     private static readonly Uri Loopback = new("http://127.0.0.1:8787/");
 
-    private static DevelopmentServerClient Create(ScriptedHttpMessageHandler handler) =>
-        new(Loopback, handler);
+    private static DevelopmentServerClient Create(ScriptedHttpMessageHandler handler, TimeSpan? timeout = null) =>
+        new(Loopback, handler, timeout);
 
     [Fact]
     public async Task Health_ParsesContractJson()
     {
         var handler = new ScriptedHttpMessageHandler();
-        handler.EnqueueJson(HttpStatusCode.OK, """
-            {
-              "status": "ok",
-              "accepting_authorized_operations": true,
-              "schema_version": 1,
-              "bootstrap_completed": true,
-              "features": { "local_accounts": true, "remote_control": false }
-            }
-            """);
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.HealthOk());
 
         using var client = Create(handler);
         var health = await client.GetHealthAsync(CancellationToken.None);
@@ -166,36 +108,113 @@ public class DevelopmentServerClientTests
         Assert.Equal("ok", health.Status);
         Assert.True(health.AcceptingAuthorizedOperations);
         Assert.Equal(1, health.SchemaVersion);
+        Assert.True(health.IsReady);
         Assert.True(health.Features!["local_accounts"]);
         Assert.False(health.Features["remote_control"]);
+    }
+
+    [Fact]
+    public async Task Health_Degraded_IsNeverReady()
+    {
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.HealthDegraded());
+
+        using var client = Create(handler);
+        var health = await client.GetHealthAsync(CancellationToken.None);
+
+        Assert.False(health.IsReady);
     }
 
     [Fact]
     public async Task Login_StoresSessionAndDoesNotLogToken()
     {
         var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.LoginOk());
+
+        using var client = Create(handler);
+        var login = await client.LoginAsync("admin", "at-least-12-characters", null, CancellationToken.None);
+
+        Assert.True(client.HasSession);
+        Assert.Equal("admin", login.Account!.Username);
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.SessionOk());
+        _ = await client.GetSessionAsync(CancellationToken.None);
+        Assert.Equal("<present>", handler.AuthorizationHeaders[^1]);
+    }
+
+    [Fact]
+    public async Task Login_WithRequestedManagerIdentity_RequiresApprovedMatch()
+    {
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.LoginOk(managerIdentity: "dev-manager"));
+
+        using var client = Create(handler);
+        var login = await client.LoginAsync("admin", "at-least-12-characters", "dev-manager", CancellationToken.None);
+        Assert.Equal("approved", login.Manager!.LifecycleState);
+    }
+
+    [Fact]
+    public async Task Login_RequestedManagerPending_IsForbidden()
+    {
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.LoginOk(
+            managerIdentity: "dev-manager",
+            managerState: "pending"));
+
+        using var client = Create(handler);
+        var ex = await Assert.ThrowsAsync<ServerClientException>(() =>
+            client.LoginAsync("admin", "at-least-12-characters", "dev-manager", CancellationToken.None));
+        Assert.Equal(ServerClientFailure.Forbidden, ex.Failure);
+        Assert.False(client.HasSession);
+    }
+
+    [Fact]
+    public async Task Login_RequestedManagerMismatch_IsInvalidResponse()
+    {
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.LoginOk(managerIdentity: "other-manager"));
+
+        using var client = Create(handler);
+        var ex = await Assert.ThrowsAsync<ServerClientException>(() =>
+            client.LoginAsync("admin", "at-least-12-characters", "dev-manager", CancellationToken.None));
+        Assert.Equal(ServerClientFailure.InvalidResponse, ex.Failure);
+        Assert.False(client.HasSession);
+    }
+
+    [Fact]
+    public async Task Login_RequestedManagerMissing_IsInvalidResponse()
+    {
+        var handler = new ScriptedHttpMessageHandler();
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.LoginOk(managerIdentity: null));
+
+        using var client = Create(handler);
+        var ex = await Assert.ThrowsAsync<ServerClientException>(() =>
+            client.LoginAsync("admin", "at-least-12-characters", "dev-manager", CancellationToken.None));
+        Assert.Equal(ServerClientFailure.InvalidResponse, ex.Failure);
+        Assert.False(client.HasSession);
+    }
+
+    [Fact]
+    public async Task Login_MfaRequiredUnavailable_IsNotClaimed()
+    {
+        var handler = new ScriptedHttpMessageHandler();
         handler.EnqueueJson(HttpStatusCode.OK, """
             {
               "token": "opaque-session-token-value",
-              "expires_at_unix": 1760086400,
-              "account": { "id": "acct-1", "username": "admin", "state": "active", "revision": 1 },
-              "manager": { "id": "mgr-1", "public_identity": "dev-manager", "lifecycle_state": "approved" },
-              "mfa": { "required": false, "available": false, "reason": "mfa_not_implemented_in_this_foundation" }
+              "expires_at_unix": 9999999999,
+              "account": {
+                "id": "acct-1", "username": "admin", "state": "active",
+                "capabilities": { "operate": true }, "revision": 1
+              },
+              "manager": null,
+              "mfa": { "required": true, "available": false, "reason": "mfa_not_implemented_in_this_foundation" }
             }
             """);
 
         using var client = Create(handler);
-        var login = await client.LoginAsync("admin", "at-least-12-characters", "dev-manager", CancellationToken.None);
-
-        Assert.True(client.HasSession);
-        Assert.Equal("admin", login.Account!.Username);
-        Assert.Equal("approved", login.Manager!.LifecycleState);
-        // Second call must send a bearer header; test records presence only.
-        handler.EnqueueJson(HttpStatusCode.OK, """
-            { "account": { "id": "acct-1", "username": "admin", "state": "active", "revision": 1 }, "manager": null, "expires_at_unix": 1760086400 }
-            """);
-        _ = await client.GetSessionAsync(CancellationToken.None);
-        Assert.Equal("<present>", handler.AuthorizationHeaders[^1]);
+        var ex = await Assert.ThrowsAsync<ServerClientException>(() =>
+            client.LoginAsync("admin", "at-least-12-characters", null, CancellationToken.None));
+        Assert.Equal(ServerClientFailure.NotAvailableInThisBuild, ex.Failure);
+        Assert.False(client.HasSession);
     }
 
     [Fact]
@@ -214,7 +233,6 @@ public class DevelopmentServerClientTests
         Assert.Equal("unauthorized", ex.ErrorCode);
         Assert.Equal(401, ex.HttpStatus);
         Assert.False(client.HasSession);
-        // Message must not echo the password.
         Assert.DoesNotContain("wrong-password", ex.Message);
     }
 
@@ -253,13 +271,7 @@ public class DevelopmentServerClientTests
     public async Task Inventory_MapsEnrollmentStatesToHonestStatus()
     {
         var handler = new ScriptedHttpMessageHandler();
-        handler.EnqueueJson(HttpStatusCode.OK, """
-            {
-              "token": "opaque-session-token-value",
-              "expires_at_unix": 1760086400,
-              "account": { "id": "a", "username": "admin", "state": "active", "revision": 1 }
-            }
-            """);
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.LoginOk());
         handler.EnqueueJson(HttpStatusCode.OK, """
             {
               "computers": [
@@ -313,13 +325,7 @@ public class DevelopmentServerClientTests
     public async Task Logout_ClearsSessionEvenIfServerRejects()
     {
         var handler = new ScriptedHttpMessageHandler();
-        handler.EnqueueJson(HttpStatusCode.OK, """
-            {
-              "token": "opaque-session-token-value",
-              "expires_at_unix": 1760086400,
-              "account": { "id": "a", "username": "admin", "state": "active", "revision": 1 }
-            }
-            """);
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.LoginOk());
         handler.EnqueueJson(HttpStatusCode.InternalServerError, """
             { "error": { "code": "internal", "message": "storage failure" } }
             """);
@@ -336,13 +342,7 @@ public class DevelopmentServerClientTests
     public async Task Logout_Success_ClearsSession()
     {
         var handler = new ScriptedHttpMessageHandler();
-        handler.EnqueueJson(HttpStatusCode.OK, """
-            {
-              "token": "opaque-session-token-value",
-              "expires_at_unix": 1760086400,
-              "account": { "id": "a", "username": "admin", "state": "active", "revision": 1 }
-            }
-            """);
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.LoginOk());
         handler.EnqueueJson(HttpStatusCode.NoContent, "");
 
         using var client = Create(handler);
@@ -355,13 +355,7 @@ public class DevelopmentServerClientTests
     public async Task ClearSession_DropsBearer()
     {
         var handler = new ScriptedHttpMessageHandler();
-        handler.EnqueueJson(HttpStatusCode.OK, """
-            {
-              "token": "opaque-session-token-value",
-              "expires_at_unix": 1760086400,
-              "account": { "id": "a", "username": "admin", "state": "active", "revision": 1 }
-            }
-            """);
+        handler.EnqueueJson(HttpStatusCode.OK, ContractFixtures.LoginOk());
 
         using var client = Create(handler);
         await client.LoginAsync("admin", "at-least-12-characters", null, CancellationToken.None);

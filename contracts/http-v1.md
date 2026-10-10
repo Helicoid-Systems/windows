@@ -1,13 +1,15 @@
-# HS Server HTTP contract — version 1
+# Helicoid Systems Server HTTP contract — version 1
 
-Product: **Helicoid Systems** (working names HS Manager / HS Computer).
+Product: **Helicoid** (Helicoid Systems). Organization: Helicoid-Systems.
+Working names HS Manager / HS Computer.
 Owner: `modules/server`. Status: development foundation. Clients integrate
 against this file; do not invent additional fields.
 
-Transport: HTTP/1.1 JSON on the configured bind address. **Default bind is
-loopback only** (`127.0.0.1:8787`). This build has **no** production LAN,
-control, media, file-job, or MFA authority. Those surfaces return explicit
-unavailable errors rather than fake success.
+Transport: HTTP/1.1 JSON on the configured bind address. **Default and required
+bind is literal loopback only** (`127.0.0.1` / `::1`). The server **refuses**
+non-loopback socket binds (for example `0.0.0.0` or `[::]`) before listening.
+This build has **no** production LAN, control, media, file-job, or MFA authority.
+Those surfaces return explicit unavailable errors rather than fake success.
 
 Authentication: opaque bearer session tokens (`Authorization: Bearer <token>`).
 Tokens are returned once at login/bootstrap and stored only as SHA-256 digests.
@@ -63,7 +65,7 @@ Example:
 
 Unauthenticated liveness + authority readiness.
 
-**200**
+**200** — example of a ready deployment (bootstrap completed, trust state healthy):
 
 ```json
 {
@@ -84,8 +86,23 @@ Unauthenticated liveness + authority readiness.
 }
 ```
 
-`status` is `"degraded"` and `accepting_authorized_operations` is `false` when
-Security State Unavailable is latched or bootstrap has not completed.
+Health semantics (fail closed):
+
+| Condition | `status` | `accepting_authorized_operations` | `bootstrap_completed` |
+| --- | --- | --- | --- |
+| Trust healthy **and** bootstrap completed | `ok` | `true` | `true` |
+| Bootstrap not completed (trust healthy) | `degraded` | `false` | `false` |
+| Security State Unavailable (memory or durable) | `degraded` | `false` | real value if readable, else `false` |
+| Deployment row missing / trust record unreadable / invalid | `degraded` | `false` | `false` unless a prior readable value is retained |
+
+- `accepting_authorized_operations` is **never** `true` before bootstrap completes.
+- POST `/v1/bootstrap` remains allowed while trust state is healthy and bootstrap
+  is incomplete (`status` `degraded` is expected until first bootstrap).
+- A missing deployment row **latches** Security State Unavailable (subsequent
+  login/token creation return `503`); it does not merely return degraded while
+  authority could still be issued.
+- When the durable record is readable, `bootstrap_completed` is reported as
+  stored (not fabricated).
 
 ---
 
@@ -428,7 +445,7 @@ When a required storage commit/read fails, `/health` reports
 
 No new grants, logins that issue sessions, enrollment approvals, or inventory
 mutations are accepted while latched. Existing sessions expire on their own
-deadlines.
+deadlines. The latch is durable across restart and **never auto-recovers**.
 
 ---
 

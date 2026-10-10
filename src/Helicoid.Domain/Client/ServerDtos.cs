@@ -21,6 +21,16 @@ public sealed class HealthResponse
 
     [JsonPropertyName("features")]
     public Dictionary<string, bool>? Features { get; init; }
+
+    /// <summary>
+    /// Ready only for the known-good status and when authorized operations are
+    /// accepted. Unknown or degraded statuses are never ready.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsReady =>
+        string.Equals(Status, "ok", StringComparison.Ordinal)
+        && AcceptingAuthorizedOperations
+        && SchemaVersion == DevelopmentServerClient.ExpectedSchemaVersion;
 }
 
 public sealed class LoginRequest
