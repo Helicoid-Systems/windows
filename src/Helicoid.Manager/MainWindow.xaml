@@ -1,0 +1,40 @@
+<Window
+    x:Class="Helicoid.Manager.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="32" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid x:Name="AppTitleBar" Grid.Row="0">
+            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0" Spacing="8">
+                <TextBlock Text="Helicoid Manager" Style="{StaticResource CaptionTextBlockStyle}" />
+                <TextBlock x:Name="FixtureBadge"
+                           Visibility="Collapsed"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource SystemFillColorCautionBrush}"
+                           Text="Development fixtures — sample data" />
+            </StackPanel>
+        </Grid>
+
+        <NavigationView
+            x:Name="RootNav"
+            Grid.Row="1"
+            IsBackButtonVisible="Collapsed"
+            IsSettingsVisible="False"
+            PaneDisplayMode="Left"
+            SelectionChanged="NavigationView_SelectionChanged">
+
+            <NavigationView.MenuItems>
+                <NavigationViewItem Content="Connection" Tag="Connection" />
+                <NavigationViewItem Content="Computers" Tag="Computers" IsSelected="True" />
+                <NavigationViewItem Content="Server Setup" Tag="ServerSetup" />
+            </NavigationView.MenuItems>
+
+            <Frame x:Name="ContentFrame" />
+        </NavigationView>
+    </Grid>
+</Window>
