@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- Keep NuGet restore deterministic. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+</Project>

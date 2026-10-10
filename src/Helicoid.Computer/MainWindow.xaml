@@ -1,0 +1,71 @@
+<Window
+    x:Class="Helicoid.Computer.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="32" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid x:Name="AppTitleBar" Grid.Row="0">
+            <TextBlock
+                Text="Helicoid Computer"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                VerticalAlignment="Center"
+                Margin="16,0,0,0" />
+        </Grid>
+
+        <Grid Grid.Row="1" Padding="20" RowSpacing="12">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <TextBlock Grid.Row="0" Text="Status" Style="{StaticResource TitleTextBlockStyle}" />
+
+        <StackPanel Grid.Row="1" Spacing="4">
+            <TextBlock x:Name="ConnectionText" Text="Not enrolled" Style="{StaticResource BodyStrongTextBlockStyle}" />
+            <TextBlock x:Name="OperatorText" Text="Connected. No active screen access" Style="{StaticResource BodyTextBlockStyle}" />
+        </StackPanel>
+
+        <InfoBar
+            Grid.Row="2"
+            x:Name="AccessInfo"
+            IsOpen="True"
+            Severity="Informational"
+            Title="Screen access"
+            Message="No active screen access" />
+
+        <InfoBar
+            Grid.Row="3"
+            IsOpen="True"
+            Severity="Informational"
+            Title="Stopping remote control"
+            Message="The computer user cannot stop remote control from this app. The controlling operator or authorized IT can stop it, and security teardown still applies automatically." />
+
+        <StackPanel Grid.Row="4" Spacing="8">
+            <TextBlock Text="Available actions" Style="{StaticResource SubtitleTextBlockStyle}" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="RequestHelpButton" Content="Request Help" IsEnabled="False" />
+                <Button x:Name="ViewDetailsButton" Content="View Details" IsEnabled="False" />
+            </StackPanel>
+            <TextBlock
+                Text="There is no Stop Control command on this computer."
+                Style="{StaticResource CaptionTextBlockStyle}"
+                TextWrapping="Wrap" />
+        </StackPanel>
+
+        <TextBlock
+            Grid.Row="5"
+            Text="Developed by Helicoid Systems"
+            Style="{StaticResource CaptionTextBlockStyle}"
+            HorizontalAlignment="Center" />
+        </Grid>
+    </Grid>
+</Window>

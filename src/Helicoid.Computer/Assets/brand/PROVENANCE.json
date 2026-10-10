@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "copiedOn": "2026-10-10",
+  "canonicalSource": "assets/brand/ in the Helicoid main workspace",
+  "provenance": "User-supplied original branding assets (manifest.json providedOn 2026-10-09). Copied as source only.",
+  "windowsAssignment": {
+    "platform": "Windows",
+    "appRole": "manager and monitored computer",
+    "source": "HS App icon.icon",
+    "status": "Existing source retained; native Windows icon exports not generated"
+  },
+  "notes": [
+    "No fabricated .ico, .png scale set, or StoreLogo export is generated here.",
+    "Native Windows package icon integration remains pending B01/V51-class proof on a Windows build host.",
+    "SVG logos are retained for light/dark surfaces; they are not compiled into native image resources by this tree."
+  ],
+  "files": [
+    { "path": "HS App icon.icon/icon.json", "role": "Layered icon source metadata" },
+    { "path": "HS App icon.icon/Assets/hs stripe.svg", "role": "Stripe layer" },
+    { "path": "HS App icon.icon/Assets/hs text.svg", "role": "Text layer" },
+    { "path": "hs logo.svg", "role": "Logo, dark lettering for light surfaces" },
+    { "path": "hs logo white.svg", "role": "Logo, white lettering for dark surfaces" }
+  ]
+}

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="HelicoidSystems.HelicoidComputer"
+    Publisher="CN=Helicoid Systems"
+    Version="0.1.0.0" />
+
+  <Properties>
+    <DisplayName>Helicoid Computer</DisplayName>
+    <PublisherDisplayName>Helicoid Systems</PublisherDisplayName>
+    <Description>Monitored computer status for Helicoid</Description>
+    <Logo>Assets\brand\hs logo.svg</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="x-generate"/>
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+      Executable="$targetnametoken$.exe"
+      EntryPoint="$targetentrypoint$">
+      <uap:VisualElements
+        DisplayName="Helicoid Computer"
+        Description="Monitored computer status for Helicoid"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\brand\hs logo.svg"
+        Square44x44Logo="Assets\brand\hs logo.svg">
+        <uap:DefaultTile Wide310x150Logo="Assets\brand\hs logo.svg" />
+        <uap:SplashScreen Image="Assets\brand\hs logo.svg" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
