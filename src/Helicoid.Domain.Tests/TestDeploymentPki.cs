@@ -7,6 +7,9 @@ namespace Helicoid.Domain.Tests;
 /// <summary>
 /// TEST-ONLY disposable PKI for real TLS socket proofs. Generated at runtime
 /// via CertificateRequest; nothing here enters normal application operation.
+/// Private keys are materialized through a PKCS#12 reimport into temporary
+/// user key storage so Windows Schannel owns a usable key handle (ephemeral
+/// CopyWithPrivateKey keys are not reliable for AuthenticateAsServer).
 /// </summary>
 internal sealed class TestDeploymentPki : IDisposable
 {
@@ -45,8 +48,9 @@ internal sealed class TestDeploymentPki : IDisposable
 
         var notBefore = DateTimeOffset.UtcNow.AddDays(-60);
         var notAfter = DateTimeOffset.UtcNow.AddYears(1);
-        var ca = request.CreateSelfSigned(notBefore, notAfter);
-        // Keep an independent private-key handle for leaf issuance.
+        using var selfSigned = request.CreateSelfSigned(notBefore, notAfter);
+        // Own a key handle independent of the ephemeral RSA above (Schannel).
+        var ca = MaterializePrivateKey(selfSigned);
         return new TestDeploymentPki(ca);
     }
 
@@ -122,21 +126,37 @@ internal sealed class TestDeploymentPki : IDisposable
             serial[15] = 1;
         }
 
-        var signed = request.Create(Ca, start, end, serial);
-        try
-        {
-            return signed.CopyWithPrivateKey(key);
-        }
-        catch
-        {
-            signed.Dispose();
-            throw;
-        }
+        using var signed = request.Create(Ca, start, end, serial);
+        using var withEphemeralKey = signed.CopyWithPrivateKey(key);
+        // PKCS#12 reimport: returned cert owns an independent native key handle.
+        return MaterializePrivateKey(withEphemeralKey);
     }
 
     public void Dispose()
     {
         Ca.Dispose();
+    }
+
+    /// <summary>
+    /// TEST-ONLY: reimport cert+key via PKCS#12 into temporary user key storage
+    /// so Schannel can use the private key during AuthenticateAsServer. No OS
+    /// trust store and no persistent production identity is created; handles are
+    /// released when the returned certificate is disposed.
+    /// </summary>
+    internal static X509Certificate2 MaterializePrivateKey(X509Certificate2 certificateWithKey)
+    {
+        var pfx = certificateWithKey.Export(X509ContentType.Pkcs12);
+        try
+        {
+            return X509CertificateLoader.LoadPkcs12(
+                pfx,
+                password: null,
+                X509KeyStorageFlags.Exportable | X509KeyStorageFlags.UserKeySet);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(pfx);
+        }
     }
 }
 
@@ -166,7 +186,6 @@ internal static class TestHttpScripts
 
     public static byte[] Redirect(string location, int status = 302)
     {
-        var body = Array.Empty<byte>();
         var head =
             $"HTTP/1.1 {status} Redirect\r\n" +
             $"Location: {location}\r\n" +

@@ -4,37 +4,134 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Helicoid.Domain.Client;
 
 namespace Helicoid.Domain.Tests;
 
 /// <summary>
+/// TEST-ONLY bounds for native TLS fixture work. Gates must not await forever.
+/// </summary>
+internal static class TestTimeouts
+{
+    /// <summary>Max wait for a server/handshake coordination gate.</summary>
+    public static readonly TimeSpan Gate = TimeSpan.FromSeconds(10);
+
+    /// <summary>Upper bound for a single test path (no process hang).</summary>
+    public static readonly TimeSpan Test = TimeSpan.FromSeconds(45);
+
+    public static string FormatErrors(IReadOnlyList<Exception> errors)
+    {
+        if (errors.Count == 0)
+        {
+            return "(no server errors recorded)";
+        }
+
+        var sb = new StringBuilder();
+        for (var i = 0; i < errors.Count; i++)
+        {
+            var ex = errors[i];
+            sb.Append('[').Append(i).Append("] ")
+                .Append(ex.GetType().Name).Append(": ").Append(ex.Message).AppendLine();
+        }
+
+        return sb.ToString();
+    }
+}
+
+/// <summary>
+/// TEST-ONLY: positive-path helpers that surface server handshake exceptions
+/// instead of swallowing them behind client EOF/TransportFailed.
+/// </summary>
+internal static class TlsTestAssert
+{
+    public static async Task<byte[]> GetOkAsync(
+        PinnedHttpsTransport transport,
+        TestHttpsServer server,
+        string target,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await transport.GetAsync(target, cancellationToken)
+                .WaitAsync(TestTimeouts.Test, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            throw new Xunit.Sdk.XunitException(
+                $"Positive TLS request '{target}' failed: {ex.GetType().Name}: {ex.Message}\n" +
+                $"{ex}\nServer handshake/IO errors:\n{TestTimeouts.FormatErrors(server.Errors)}");
+        }
+    }
+
+    /// <summary>
+    /// Wait for a server gate, but fail fast (with server errors) if the client
+    /// request completes first — typically an early TLS/handshake failure.
+    /// </summary>
+    public static async Task GateOrRequestAsync(
+        string gateName,
+        Task gate,
+        Task request,
+        TestHttpsServer server,
+        CancellationToken cancellationToken = default)
+    {
+        var requestTask = request.ContinueWith(
+            static t => t,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default).WaitAsync(TestTimeouts.Test, cancellationToken);
+        var finished = await Task.WhenAny(gate, requestTask).ConfigureAwait(false);
+        if (ReferenceEquals(finished, requestTask))
+        {
+            var completed = await requestTask.ConfigureAwait(false);
+            if (completed.IsFaulted || completed.IsCanceled)
+            {
+                var ex = completed.Exception?.GetBaseException()
+                    ?? new TaskCanceledException(completed);
+                throw new Xunit.Sdk.XunitException(
+                    $"Client request finished before server gate '{gateName}'.\n{ex}\n" +
+                    $"Server handshake/IO errors:\n{TestTimeouts.FormatErrors(server.Errors)}");
+            }
+        }
+
+        await gate.WaitAsync(TestTimeouts.Gate, cancellationToken).ConfigureAwait(false);
+    }
+}
+
+/// <summary>
 /// TEST-ONLY loopback HTTPS server speaking real TLS via SslStream. Used only
 /// by Domain.Tests to prove pinned-transport behavior on actual sockets.
+/// Listens on IPv4 and IPv6 loopback only (never IPv6Any). Connection handlers
+/// are tracked and drained on dispose before the owned leaf is disposed.
 /// </summary>
 internal sealed class TestHttpsServer : IAsyncDisposable
 {
-    private readonly TcpListener _listener;
+    private readonly List<TcpListener> _listeners = new();
     private readonly X509Certificate2 _certificate;
     private readonly Func<string, CancellationToken, Task<byte[]>> _responder;
     private readonly CancellationTokenSource _cts = new();
-    private readonly Task _acceptLoop;
+    private readonly List<Task> _handlers = new();
     private readonly List<Exception> _errors = new();
     private readonly TaskCompletionSource _tcpAccepted = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource? _allowHandshake;
+    private readonly List<Task> _acceptLoops = new();
     private int _connectionsServed;
+    private int _disposed;
 
     private TestHttpsServer(
-        TcpListener listener,
+        IEnumerable<TcpListener> listeners,
         X509Certificate2 certificate,
         Func<string, CancellationToken, Task<byte[]>> responder,
         TaskCompletionSource? allowHandshake)
     {
-        _listener = listener;
+        _listeners.AddRange(listeners);
         _certificate = certificate;
         _responder = responder;
         _allowHandshake = allowHandshake;
-        Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
-        _acceptLoop = Task.Run(AcceptLoopAsync);
+        Port = ((IPEndPoint)_listeners[0].LocalEndpoint).Port;
+        foreach (var listener in _listeners)
+        {
+            _acceptLoops.Add(Task.Run(() => AcceptLoopAsync(listener)));
+        }
     }
 
     public int Port { get; }
@@ -90,18 +187,37 @@ internal sealed class TestHttpsServer : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(serverCertificate);
         ArgumentNullException.ThrowIfNull(responder);
 
-        // Dual-mode IPv6Any accepts both 127.0.0.1 and ::1 so localhost and
-        // literal-IP origins reach this listener regardless of resolver order.
-        var listener = new TcpListener(IPAddress.IPv6Any, 0);
-        listener.Server.DualMode = true;
-        listener.Start();
-        return new TestHttpsServer(listener, serverCertificate, responder, allowHandshake)
+        // Loopback-only dual stack: 127.0.0.1 and ::1 on one port when possible.
+        var listeners = StartLoopbackListeners();
+        return new TestHttpsServer(listeners, serverCertificate, responder, allowHandshake)
         {
             Host = host,
         };
     }
 
-    private async Task AcceptLoopAsync()
+    private static List<TcpListener> StartLoopbackListeners()
+    {
+        var listeners = new List<TcpListener>();
+        var v4 = new TcpListener(IPAddress.Loopback, 0);
+        v4.Start();
+        listeners.Add(v4);
+        var port = ((IPEndPoint)v4.LocalEndpoint).Port;
+
+        try
+        {
+            var v6 = new TcpListener(IPAddress.IPv6Loopback, port);
+            v6.Start();
+            listeners.Add(v6);
+        }
+        catch (SocketException)
+        {
+            // IPv6 loopback unavailable; IPv4 loopback still serves.
+        }
+
+        return listeners;
+    }
+
+    private async Task AcceptLoopAsync(TcpListener listener)
     {
         var token = _cts.Token;
         try
@@ -111,7 +227,7 @@ internal sealed class TestHttpsServer : IAsyncDisposable
                 TcpClient client;
                 try
                 {
-                    client = await _listener.AcceptTcpClientAsync(token).ConfigureAwait(false);
+                    client = await listener.AcceptTcpClientAsync(token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -126,7 +242,11 @@ internal sealed class TestHttpsServer : IAsyncDisposable
                     break;
                 }
 
-                _ = Task.Run(() => HandleConnectionAsync(client, token), CancellationToken.None);
+                var handler = Task.Run(() => HandleConnectionAsync(client, token), CancellationToken.None);
+                lock (_handlers)
+                {
+                    _handlers.Add(handler);
+                }
             }
         }
         catch (Exception ex)
@@ -168,7 +288,7 @@ internal sealed class TestHttpsServer : IAsyncDisposable
                 }
                 catch (Exception ex) when (ex is AuthenticationException or IOException or OperationCanceledException)
                 {
-                    // Client refused the certificate or cancelled the handshake.
+                    // Client refused the certificate, cancelled, or the handshake failed.
                     RecordError(ex);
                     return;
                 }
@@ -180,7 +300,7 @@ internal sealed class TestHttpsServer : IAsyncDisposable
                 await ssl.FlushAsync(token).ConfigureAwait(false);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex)
         {
             RecordError(ex);
         }
@@ -189,10 +309,12 @@ internal sealed class TestHttpsServer : IAsyncDisposable
     private static async Task<string> ReadRequestHeadAsync(Stream stream, CancellationToken token)
     {
         var buffer = new byte[8192];
-        var collected = new MemoryStream();
+        using var collected = new MemoryStream();
         while (true)
         {
-            var n = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), token).ConfigureAwait(false);
+            var n = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), token)
+                .AsTask()
+                .WaitAsync(TestTimeouts.Gate, token).ConfigureAwait(false);
             if (n <= 0)
             {
                 break;
@@ -225,24 +347,55 @@ internal sealed class TestHttpsServer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _cts.Cancel();
-        try
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-            _listener.Stop();
+            return;
         }
-        catch (SocketException)
+
+        _cts.Cancel();
+        foreach (var listener in _listeners)
         {
+            try
+            {
+                listener.Stop();
+            }
+            catch (SocketException)
+            {
+            }
+        }
+
+        foreach (var loop in _acceptLoops)
+        {
+            try
+            {
+                await loop.WaitAsync(TestTimeouts.Gate).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                RecordError(ex);
+                throw;
+            }
+        }
+
+        Task[] handlers;
+        lock (_handlers)
+        {
+            handlers = _handlers.ToArray();
         }
 
         try
         {
-            await _acceptLoop.ConfigureAwait(false);
+            await Task.WhenAll(handlers).WaitAsync(TestTimeouts.Gate).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             RecordError(ex);
+            throw;
         }
 
+        // Drain complete: dispose the owned leaf last so in-flight handshakes
+        // could not observe a disposed server certificate.
+        _certificate.Dispose();
         _cts.Dispose();
     }
 }

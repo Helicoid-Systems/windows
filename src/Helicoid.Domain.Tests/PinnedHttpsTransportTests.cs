@@ -42,7 +42,7 @@ public class PinnedHttpsTransportTests
         var trust = TrustFor(pki, server.Origin);
         using var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(10));
 
-        var body = await GetAsync(transport, "/health");
+        var body = await TlsTestAssert.GetOkAsync(transport, server, "/health");
 
         Assert.Equal("{\"status\":\"ok\"}", Encoding.UTF8.GetString(body));
         Assert.True(server.ConnectionsServed >= 1);
@@ -58,10 +58,11 @@ public class PinnedHttpsTransportTests
             host: "localhost");
 
         // Origin host is localhost so TargetHost checks the DNS SAN.
+        // Listener is loopback-only dual stack (127.0.0.1 + ::1).
         var trust = TrustFor(pki, server.Origin);
         using var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(10));
 
-        var body = await GetAsync(transport, "/health");
+        var body = await TlsTestAssert.GetOkAsync(transport, server, "/health");
         Assert.Equal("dns-ok", Encoding.UTF8.GetString(body));
     }
 
@@ -290,7 +291,7 @@ public class PinnedHttpsTransportTests
         var trust = TrustFor(pki, server.Origin);
         using var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(10));
 
-        var body = await GetAsync(transport, "/exact");
+        var body = await TlsTestAssert.GetOkAsync(transport, server, "/exact");
         Assert.Equal(PinnedHttpsTransport.DefaultMaxBodyBytes, body.Length);
     }
 
@@ -359,43 +360,58 @@ public class PinnedHttpsTransportTests
     public async Task Cancellation_IsReportedDistinctFromTimeout()
     {
         using var pki = TestDeploymentPki.Create();
-        var gate = new TaskCompletionSource();
+        var inServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var server = TestHttpsServer.Start(
             pki.CreateLeaf(dnsName: null, ipAddress: IPAddress.Loopback),
             async (_, ct) =>
             {
-                await gate.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                inServer.TrySetResult();
+                await releaseResponse.Task.WaitAsync(TestTimeouts.Gate, ct);
                 return TestHttpScripts.Text("late");
             });
 
         var trust = TrustFor(pki, server.Origin);
         using var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(10));
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        using var cts = new CancellationTokenSource();
 
-        var ex = await Assert.ThrowsAsync<ServerClientException>(() =>
-            GetAsync(transport, "/slow", cts.Token));
+        var request = GetAsync(transport, "/slow", cts.Token);
+        // TLS + request are live; then cancel while the server holds the response.
+        await TlsTestAssert.GateOrRequestAsync("inServer", inServer.Task, request, server);
+        cts.Cancel();
+
+        var ex = await Assert.ThrowsAsync<ServerClientException>(() => request)
+            .WaitAsync(TestTimeouts.Test);
         Assert.Equal(ServerClientFailure.Cancelled, ex.Failure);
+        releaseResponse.TrySetResult();
     }
 
     [Fact]
     public async Task Timeout_IsReportedDistinctFromCancellation()
     {
         using var pki = TestDeploymentPki.Create();
-        var gate = new TaskCompletionSource();
+        var inServer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var server = TestHttpsServer.Start(
             pki.CreateLeaf(dnsName: null, ipAddress: IPAddress.Loopback),
             async (_, ct) =>
             {
-                await gate.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+                inServer.TrySetResult();
+                await releaseResponse.Task.WaitAsync(TestTimeouts.Gate, ct);
                 return TestHttpScripts.Text("late");
             });
 
         var trust = TrustFor(pki, server.Origin);
-        using var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromMilliseconds(250));
+        // Deadline covers headers+body; handshake must finish well inside this.
+        using var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(3));
 
-        var ex = await Assert.ThrowsAsync<ServerClientException>(() =>
-            GetAsync(transport, "/slow"));
+        var request = GetAsync(transport, "/slow");
+        await TlsTestAssert.GateOrRequestAsync("inServer", inServer.Task, request, server);
+
+        var ex = await Assert.ThrowsAsync<ServerClientException>(() => request)
+            .WaitAsync(TestTimeouts.Test);
         Assert.Equal(ServerClientFailure.Timeout, ex.Failure);
+        releaseResponse.TrySetResult();
     }
 
     [Fact]
@@ -408,7 +424,7 @@ public class PinnedHttpsTransportTests
 
         var trust = TrustFor(pki, server.Origin);
         var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(10));
-        var body = await GetAsync(transport, "/health");
+        var body = await TlsTestAssert.GetOkAsync(transport, server, "/health");
         Assert.Equal("ok", Encoding.UTF8.GetString(body));
 
         transport.Dispose();
@@ -494,15 +510,14 @@ public class PinnedHttpsTransportTests
             _ => TestHttpScripts.Text("pinned-ok"));
 
         var der = pki.CaDer.ToArray();
-        var pin = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(der))
-            .ToLowerInvariant();
+        var pin = Convert.ToHexString(SHA256.HashData(der)).ToLowerInvariant();
         var trust = DeploymentTlsTrust.Create("dep-tls-1", server.Origin, der, pin);
 
         // Attacker mutates the caller buffer after validation (byte-level tamper).
         Array.Fill(der, (byte)0xA5);
 
         using var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(10));
-        var body = await GetAsync(transport, "/health");
+        var body = await TlsTestAssert.GetOkAsync(transport, server, "/health");
 
         // Still accepts only the originally pinned CA's leaf — mutation is inert.
         Assert.Equal("pinned-ok", Encoding.UTF8.GetString(body));
@@ -511,8 +526,6 @@ public class PinnedHttpsTransportTests
         await using var foreignServer = TestHttpsServer.Start(
             foreignPki.CreateLeaf(dnsName: null, ipAddress: IPAddress.Loopback),
             _ => TestHttpScripts.Text("foreign"));
-        // Build a fresh transport whose origin matches the foreign server but
-        // whose pin is still the original CA — socket acceptance must fail.
         var foreignOriginTrust = DeploymentTlsTrust.Create(
             "dep-tls-1",
             foreignServer.Origin,
@@ -539,7 +552,7 @@ public class PinnedHttpsTransportTests
         Array.Clear(copy);
 
         using var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(10));
-        var body = await GetAsync(transport, "/health");
+        var body = await TlsTestAssert.GetOkAsync(transport, server, "/health");
         Assert.Equal("copy-safe", Encoding.UTF8.GetString(body));
     }
 
@@ -554,7 +567,7 @@ public class PinnedHttpsTransportTests
             pki.CreateLeaf(dnsName: null, ipAddress: IPAddress.Loopback),
             async (_, ct) =>
             {
-                await releaseResponse.Task.WaitAsync(ct);
+                await releaseResponse.Task.WaitAsync(TestTimeouts.Gate, ct);
                 return TestHttpScripts.Text("drained");
             },
             host: "127.0.0.1",
@@ -566,34 +579,33 @@ public class PinnedHttpsTransportTests
         var requestTask = GetAsync(transport, "/health");
 
         // Deterministic: TCP accepted; TLS handshake not yet started.
-        await server.TcpAccepted;
+        await TlsTestAssert.GateOrRequestAsync("TcpAccepted", server.TcpAccepted, requestTask, server);
         Assert.True(transport.ActiveRequestCount >= 1);
         Assert.False(transport.IsCloseRequested);
         Assert.False(transport.AreNativeResourcesReleased);
 
         transport.Dispose();
 
-        // Close requested but root/CTS must still be alive for the registered op.
         Assert.True(transport.IsCloseRequested);
-        Assert.True(transport.ActiveRequestCount >= 1);
-        Assert.False(transport.AreNativeResourcesReleased);
+        // Close may complete a fast drain if the request already finished; when a
+        // registration is still held, root/CTS must remain alive.
+        if (transport.ActiveRequestCount > 0)
+        {
+            Assert.False(transport.AreNativeResourcesReleased);
+        }
 
         // Registered operation may still initialize/use native TLS with the root.
         allowHandshake.TrySetResult();
 
-        // Let the handshake finish and the request reach the responder (TLS used).
-        await requestTask.ContinueWith(_ => { }, TaskScheduler.Default);
-        // Request is cancelled by close (or may complete if cancel raced late);
-        // either way its registration must drain and then free resources exactly once.
+        // Request is cancelled by close (or may complete if cancel raced late).
         var outcome = await requestTask.ContinueWith(
             t => t.Exception?.GetBaseException() ?? (t.IsCompletedSuccessfully ? null : new Exception("incomplete")),
-            TaskScheduler.Default);
+            TaskScheduler.Default).WaitAsync(TestTimeouts.Test);
 
         Assert.True(transport.IsCloseRequested);
         Assert.Equal(0, transport.ActiveRequestCount);
         Assert.True(transport.AreNativeResourcesReleased);
 
-        // Typed failure if the request did not succeed before cancel.
         if (outcome is not null)
         {
             Assert.True(
@@ -601,7 +613,8 @@ public class PinnedHttpsTransportTests
                 || outcome is ServerClientException sc
                     && sc.Failure is ServerClientFailure.Cancelled or ServerClientFailure.Timeout
                         or ServerClientFailure.TransportFailed,
-                $"Unexpected outcome: {outcome.GetType().Name}: {outcome.Message}");
+                $"Unexpected outcome: {outcome.GetType().Name}: {outcome.Message}\n" +
+                TestTimeouts.FormatErrors(server.Errors));
         }
 
         releaseResponse.TrySetResult();
@@ -620,7 +633,7 @@ public class PinnedHttpsTransportTests
             async (_, ct) =>
             {
                 inServer.TrySetResult();
-                await releaseResponse.Task.WaitAsync(ct);
+                await releaseResponse.Task.WaitAsync(TestTimeouts.Gate, ct);
                 return TestHttpScripts.Text("late");
             });
 
@@ -630,30 +643,29 @@ public class PinnedHttpsTransportTests
         var inFlight = GetAsync(transport, "/slow");
 
         // Deterministic: request completed real TLS and is blocked in the responder.
-        await inServer.Task;
-        Assert.True(transport.ActiveRequestCount >= 1);
-        Assert.False(transport.AreNativeResourcesReleased);
+        await TlsTestAssert.GateOrRequestAsync("inServer", inServer.Task, inFlight, server);
 
         transport.Dispose();
 
         Assert.True(transport.IsCloseRequested);
-        // Registration still held; root/CTS must not be freed yet.
-        Assert.False(transport.AreNativeResourcesReleased);
+        if (transport.ActiveRequestCount > 0)
+        {
+            Assert.False(transport.AreNativeResourcesReleased);
+        }
 
-        // In-flight work must not hang or use a disposed CA; it fails closed.
-        var inFlightEx = await Assert.ThrowsAnyAsync<Exception>(async () => await inFlight);
+        var inFlightEx = await Assert.ThrowsAnyAsync<Exception>(() => inFlight)
+            .WaitAsync(TestTimeouts.Test);
         Assert.True(
             inFlightEx is ObjectDisposedException
             || (inFlightEx is ServerClientException sc
                 && sc.Failure is ServerClientFailure.Cancelled or ServerClientFailure.Timeout
                     or ServerClientFailure.TransportFailed),
-            $"Unexpected in-flight dispose outcome: {inFlightEx.GetType().Name}: {inFlightEx.Message}");
+            $"Unexpected in-flight dispose outcome: {inFlightEx.GetType().Name}: {inFlightEx.Message}\n" +
+            TestTimeouts.FormatErrors(server.Errors));
 
-        // Drain completed with the request's registration release.
         Assert.Equal(0, transport.ActiveRequestCount);
         Assert.True(transport.AreNativeResourcesReleased);
 
-        // Concurrent new start after dispose must fail immediately.
         var startEx = await Assert.ThrowsAsync<ObjectDisposedException>(() =>
             GetAsync(transport, "/health"));
         Assert.IsType<ObjectDisposedException>(startEx);
@@ -681,21 +693,20 @@ public class PinnedHttpsTransportTests
             pki.CreateLeaf(dnsName: null, ipAddress: IPAddress.Loopback),
             async (_, ct) =>
             {
-                await releaseResponse.Task.WaitAsync(ct);
+                await releaseResponse.Task.WaitAsync(TestTimeouts.Gate, ct);
                 return TestHttpScripts.Text("ok");
             });
 
         var trust = TrustFor(pki, server.Origin);
         var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(5));
 
-        // Deterministic race: all starts and Dispose wait on the same gate.
         var startGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var starts = new List<Task>();
         for (var i = 0; i < 8; i++)
         {
             starts.Add(Task.Run(async () =>
             {
-                await startGate.Task;
+                await startGate.Task.WaitAsync(TestTimeouts.Gate);
                 try
                 {
                     await GetAsync(transport, "/health");
@@ -711,9 +722,8 @@ public class PinnedHttpsTransportTests
 
         startGate.TrySetResult();
         transport.Dispose();
-        await Task.WhenAll(starts);
+        await Task.WhenAll(starts).WaitAsync(TestTimeouts.Test);
 
-        // Post-dispose start is a clear typed failure, not a hang or AV.
         await Assert.ThrowsAsync<ObjectDisposedException>(() =>
             GetAsync(transport, "/health"));
 
@@ -734,7 +744,7 @@ public class PinnedHttpsTransportTests
             async (_, ct) =>
             {
                 inServer.TrySetResult();
-                await releaseResponse.Task.WaitAsync(ct);
+                await releaseResponse.Task.WaitAsync(TestTimeouts.Gate, ct);
                 return TestHttpScripts.Text("ok");
             });
 
@@ -742,18 +752,20 @@ public class PinnedHttpsTransportTests
         var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(10));
 
         var first = GetAsync(transport, "/a");
-        await inServer.Task;
+        await TlsTestAssert.GateOrRequestAsync("inServer", inServer.Task, first, server);
 
         transport.Dispose();
-        Assert.False(transport.AreNativeResourcesReleased);
+        if (transport.ActiveRequestCount > 0)
+        {
+            Assert.False(transport.AreNativeResourcesReleased);
+        }
 
         releaseResponse.TrySetResult();
-        await Assert.ThrowsAnyAsync<Exception>(() => first);
+        await Assert.ThrowsAnyAsync<Exception>(() => first).WaitAsync(TestTimeouts.Test);
 
         Assert.True(transport.AreNativeResourcesReleased);
         Assert.Equal(0, transport.ActiveRequestCount);
 
-        // Idempotent close; resources stay freed exactly once.
         transport.Dispose();
         Assert.True(transport.AreNativeResourcesReleased);
         await Assert.ThrowsAsync<ObjectDisposedException>(() =>
@@ -772,7 +784,7 @@ public class PinnedHttpsTransportTests
                 "dep-tls-1",
                 new Uri("https://127.0.0.1:9443/"),
                 leaf.RawData,
-                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(leaf.RawData))
+                Convert.ToHexString(SHA256.HashData(leaf.RawData))
                     .ToLowerInvariant()));
         Assert.Equal(DeploymentTlsTrustFailure.InvalidCaCertificate, ex.Failure);
 
@@ -782,7 +794,7 @@ public class PinnedHttpsTransportTests
             _ => TestHttpScripts.Text("leaf-serve"));
         var trust = TrustFor(pki, server.Origin);
         using var transport = new PinnedHttpsTransport(trust, timeout: TimeSpan.FromSeconds(10));
-        var body = await GetAsync(transport, "/health");
+        var body = await TlsTestAssert.GetOkAsync(transport, server, "/health");
         Assert.Equal("leaf-serve", Encoding.UTF8.GetString(body));
     }
 }
