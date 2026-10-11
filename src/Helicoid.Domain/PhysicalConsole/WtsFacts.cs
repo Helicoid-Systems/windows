@@ -50,3 +50,38 @@ public static class WtsProtocolTypeValues
 
     public static bool IsKnown(int value) => value is >= Console and <= Rdp;
 }
+
+/// <summary>
+/// WTS_SESSIONSTATE_* values for WTSINFOEX_LEVEL1_W.SessionFlags (LONG).
+/// Windows 8 / 10 / 11 / Server 2012+ semantics only: 1 unlocks, 0 locks.
+/// Windows 7 / Server 2008 R2 reversed these two values due to a documented
+/// code defect and is not a supported target for this probe.
+/// </summary>
+public static class WtsSessionStateFlagValues
+{
+    /// <summary>WTS_SESSIONSTATE_UNLOCK: session is unlocked.</summary>
+    public const int Unlock = 1;
+
+    /// <summary>WTS_SESSIONSTATE_LOCK: session is locked.</summary>
+    public const int Lock = 0;
+
+    /// <summary>WTS_SESSIONSTATE_UNKNOWN (0xFFFFFFFF read as LONG).</summary>
+    public const int Unknown = -1;
+}
+
+/// <summary>
+/// Classified session lock state derived from WTS SessionFlags.
+/// <see cref="Unknown"/> is the zero default so an unobserved or failed lock
+/// query never appears unlocked.
+/// </summary>
+public enum WtsSessionLockState
+{
+    /// <summary>Lock state not established: query failed, missing, or unknown flag.</summary>
+    Unknown = 0,
+
+    /// <summary>WTS_SESSIONSTATE_LOCK: session is locked.</summary>
+    Locked = 1,
+
+    /// <summary>WTS_SESSIONSTATE_UNLOCK: session is explicitly unlocked.</summary>
+    Unlocked = 2,
+}

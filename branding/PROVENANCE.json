@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "providedOn": "2026-10-10",
+  "provenance": "User-supplied exact Windows app icons (role-specific). Supersedes previous Windows shared-original HS App icon.icon artwork. Mac assets are untouched.",
+  "canonicalSources": {
+    "note": "Byte-identical copies of the user-supplied files. Do not recolor, crop, or recompose.",
+    "files": [
+      {
+        "path": "source/hs-manager-windowsicon.svg",
+        "appRole": "manager",
+        "role": "Source-only vector original (not copied to runtime output)",
+        "bytes": 627143,
+        "sha256": "a6a6fefb1427def5e6063ee8c00c3053a09bec6ec8726c5be668635ac7c02a7f"
+      },
+      {
+        "path": "source/hs-manager-windowsicon.png",
+        "appRole": "manager",
+        "role": "Exact raster source for ICO conversion",
+        "bytes": 480040,
+        "width": 2000,
+        "height": 2000,
+        "mode": "RGBA",
+        "sha256": "a8c0c3de635c8f65cb848b1e57f63024d8cd7a1f25fcbf651084b9cde4c45fc9"
+      },
+      {
+        "path": "source/hs-computer-windowsicon.svg",
+        "appRole": "computer",
+        "role": "Source-only vector original (not copied to runtime output)",
+        "bytes": 294943,
+        "sha256": "ae4ede6da2920312c8abc243087747f724a0b7e5a028f21af5ecd86cc64a22cf"
+      },
+      {
+        "path": "source/hs-computer-windowsicon.png",
+        "appRole": "computer",
+        "role": "Exact raster source for ICO conversion",
+        "bytes": 227548,
+        "width": 2000,
+        "height": 2000,
+        "mode": "RGBA",
+        "sha256": "191d74434f21ab77130b5b76e7bf6a1494d117443af504930b8e27affbc007a9"
+      }
+    ]
+  },
+  "conversion": {
+    "script": "scripts/build-windows-icons.py",
+    "toolchain": "Pillow 12.3.0 via isolated `uv run --with pillow==12.3.0` (no global installs)",
+    "sizes": [16, 24, 32, 48, 64, 128, 256],
+    "recipe": "Load the exact source PNG as RGBA after verifying 2000x2000 and its recorded sha256. Hand the full frame to Pillow's ICO writer with sizes 16,24,32,48,64,128,256. Pillow downsamples each entry with Image.Resampling.LANCZOS. Square source to square target preserves supplied transparency and padding proportionally. ICO entries are PNG-encoded (alpha preserved). No crop, recolor, geometry change, or generative redesign."
+  },
+  "generated": [
+    {
+      "path": "generated/hs-manager-windowsicon.ico",
+      "appRole": "manager",
+      "bytes": 63602,
+      "entrySizes": [16, 24, 32, 48, 64, 128, 256],
+      "sha256": "2f0626a56fb18ad0f3321cd5655c06f1586e57b034a947582275e3708489af39"
+    },
+    {
+      "path": "generated/hs-computer-windowsicon.ico",
+      "appRole": "computer",
+      "bytes": 39956,
+      "entrySizes": [16, 24, 32, 48, 64, 128, 256],
+      "sha256": "ee691dc8b0030caaf37d66a374e15b89b560d291741700b99a5ce3c4b2a69f68"
+    }
+  ],
+  "wiring": {
+    "applicationIcon": "csproj ApplicationIcon embeds the role .ico as the Explorer PE resource",
+    "windowIcon": "MainWindow calls AppWindow.SetIcon with the role .ico from AppContext.BaseDirectory after the window is created",
+    "stagedIcoNames": {
+      "manager": "hs-manager-windowsicon.ico",
+      "computer": "hs-computer-windowsicon.ico"
+    },
+    "contentCopy": "The role .ico is Content with explicit CopyToOutputDirectory and CopyToPublishDirectory=PreserveNewest so it is staged beside the published exe",
+    "svgSources": "branding/source/*.svg are source-only and are not copied to runtime output"
+  },
+  "verification": {
+    "script": "scripts/verify-windows-icons.py",
+    "checks": [
+      "source PNG and SVG sha256 match this provenance file",
+      "generated ICOs contain multi-size entries 16,24,32,48,64,128,256",
+      "staged ICO exists beside published exe and matches generated ICO",
+      "PE RT_ICON/RT_GROUP_ICON images match the role ICO (pure-Python PE parse, no GUI)"
+    ]
+  }
+}
