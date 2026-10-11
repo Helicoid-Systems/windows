@@ -287,13 +287,13 @@ Host: macOS (Darwin), arm64 — **not a Windows runtime**. SDK:
 | Check | Command | Result |
 | --- | --- | --- |
 | Domain tests (locked suite) | `dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release` | **PASS** — 292 tests, 0 failed |
-| Integration project (portable facts) | `dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release` | **PASS** — 10 passed, **35 skipped** (real xUnit skip: `Requires Windows runtime`) |
+| Integration project (portable facts) | `dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release` | **PASS** — 10 passed, **37 skipped** (real xUnit skip: `Requires Windows runtime`) |
 | CaptureWorker build | `dotnet build src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj -c Release` | **PASS** — 0 warnings, 0 errors |
 | Worker surface audit | `rg` for capture/input/network APIs | **PASS** — none in `Helicoid.CaptureWorker` + `Helicoid.Domain/Worker` |
 | Role icons preserved | `shasum -a 256` | **PASS** — `HS App icon.icon/icon.json` = `ae154c55…` (both apps) |
 | Workflow YAML | `ruby -ryaml -e YAML.load_file(...)` | **PASS** |
 
-The 35 skipped tests are `[WindowsFact]`/`[WindowsTheory]` and are **not**
+The 37 skipped tests are `[WindowsFact]`/`[WindowsTheory]` and are **not**
 native proof. They execute on Windows CI only.
 
 ### What this revision added
@@ -377,7 +377,7 @@ non-Windows).
 | Check | Result |
 | --- | --- |
 | Domain tests | **292 passed, 0 failed** |
-| Integration (portable facts) | **10 passed, 35 skipped** (real xUnit skip) |
+| Integration (portable facts) | **10 passed, 37 skipped** (real xUnit skip) |
 | CaptureWorker build | 0 warnings/errors |
 | Worker runtime bundle contents | exe + dll + deps.json + runtimeconfig.json + WindowsPlatform.dll + Domain.dll present |
 | Capture/input/network surface | **None** in worker path |
