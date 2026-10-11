@@ -30,7 +30,7 @@ Runs on any OS with the .NET 10 SDK:
 dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
 ```
 
-Last local run (macOS, 10 October 2026): **292 passed, 0 failed**.
+Last coordinator run (macOS, 11 October 2026): **387 passed, 0 failed, 0 skipped**, including 95 pinned HTTPS trust, real TLS socket and lifecycle checks. Native Windows TLS acceptance is pending CI for this revision.
 
 ### Worker / supervisor integration tests
 
@@ -67,9 +67,9 @@ runs worker IPC admission checks (missing/malformed fencing env → exit 1).
 
 | Claim | Status |
 | --- | --- |
-| Domain fixture suite | **Verified locally** (292 tests) |
+| Domain and real HTTPS transport suite | **Verified locally on macOS** (387 tests); native Windows TLS checks pending |
 | Portable integration facts | **Verified locally** (10 tests) |
-| Windows-native IPC / supervisor / Job Object paths | **Pending Windows CI** — not run on macOS |
+| Windows-native IPC / supervisor / Job Object paths | **Verified at `0028bdd`** (47 tests on Windows Server 2025 CI); new revision pending |
 | Capture / input / network | **Closed** — no admitted ABI yet |
 
 ## Development server mode
@@ -114,7 +114,7 @@ Does not:
 
 - Build or run the WinUI apps on macOS (see `BUILD-REPORT.md`).
 - Capture screens, forward input, or install servers.
-- Produce production identity, authentication grants, or TLS.
+- Produce production identity or authentication grants. The separately constructed pinned HTTPS transport is implemented, but production sign-in and trust adoption are not wired into the applications.
 
 ## Package pins (checked on nuget.org, 10 October 2026)
 

@@ -1,5 +1,9 @@
 # BUILD-REPORT — Helicoid Windows (`apps/windows`)
 
+Current coordinator evidence (11 October 2026): `dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj` passed **387 tests, zero failures/skips** on macOS; `dotnet build src/Helicoid.Domain/Helicoid.Domain.csproj -warnaserror` passed with zero warnings/errors. The new transport uses sole pinned CA trust, native chain/hostname/EKU validation, bounded streaming, whole-operation cancellation and request registration that retains TLS resources until drain. Tests use actual disposable TLS sockets, including deterministic handshake/close gates. Exported MiMo metadata confirms `xiaomi/mimo-v2.6-pro`.
+
+Native Windows TLS checks for this candidate remain **Not Verified** until its CI completes. The previous `0028bdd` revision passed 292 domain and 47 native integration tests on Windows Server 2025; installed Windows 11 capture/input remains **Not Verified**. Production trust adoption and authentication remain closed. The following 10 October report is historical evidence, not the current test count or capability status.
+
 Date: 10 October 2026 (CI reconcile + artwork correction)
 Host: macOS (Darwin), arm64
 SDK: .NET 10.0.401 at `/tmp/hs-toolchain/dotnet` (coordinator-provided; not installed globally)
