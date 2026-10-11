@@ -30,7 +30,7 @@ Runs on any OS with the .NET 10 SDK:
 dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
 ```
 
-Last coordinator run (macOS, 11 October 2026): **387 passed, 0 failed, 0 skipped**, including 95 pinned HTTPS trust, real TLS socket and lifecycle checks. Native Windows TLS acceptance is pending CI for this revision.
+Last coordinator run (macOS, 11 October 2026): **387 passed, 0 failed, 0 skipped**, including 95 pinned HTTPS trust, real TLS socket and lifecycle checks. Native Windows acceptance passed at `f8f356d` in [CI38142367280](https://github.com/Helicoid-Systems/windows/actions/runs/38142367280): 387 domain tests and 47 native integration tests, zero failures/skips, app packaging and worker checks. The runner was Windows Server 2025; installed Windows 11 acceptance remains outstanding.
 
 ### Worker / supervisor integration tests
 
@@ -67,9 +67,9 @@ runs worker IPC admission checks (missing/malformed fencing env → exit 1).
 
 | Claim | Status |
 | --- | --- |
-| Domain and real HTTPS transport suite | **Verified locally on macOS** (387 tests); native Windows TLS checks pending |
+| Domain and real HTTPS transport suite | **Verified on macOS and Windows Server 2025 CI** (387 tests at `f8f356d`) |
 | Portable integration facts | **Verified locally** (10 tests) |
-| Windows-native IPC / supervisor / Job Object paths | **Verified at `0028bdd`** (47 tests on Windows Server 2025 CI); new revision pending |
+| Windows-native IPC / supervisor / Job Object paths | **Verified at `f8f356d`** (47 tests on Windows Server 2025 CI) |
 | Capture / input / network | **Closed** — no admitted ABI yet |
 
 ## Development server mode
