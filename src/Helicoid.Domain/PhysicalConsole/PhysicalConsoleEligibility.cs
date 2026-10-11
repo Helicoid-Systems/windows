@@ -51,6 +51,15 @@ public enum PhysicalConsoleDenialReason
 
     /// <summary>Input desktop is not the ordinary Default user desktop.</summary>
     DesktopNotDefault = 13,
+
+    /// <summary>Session is locked (WTS_SESSIONSTATE_LOCK).</summary>
+    SessionLocked = 14,
+
+    /// <summary>Session lock state is unknown (WTS_SESSIONSTATE_UNKNOWN).</summary>
+    UnknownLockState = 15,
+
+    /// <summary>WTSSessionInfoEx lock query failed, or returned missing / malformed header data.</summary>
+    LockQueryFailed = 16,
 }
 
 /// <summary>

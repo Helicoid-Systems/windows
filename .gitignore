@@ -6,3 +6,6 @@ obj/
 *.msix
 AppPackages/
 BundleArtifacts/
+
+__pycache__/
+*.pyc

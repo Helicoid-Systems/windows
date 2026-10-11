@@ -1,1 +1,4 @@
 *.cmd text eol=crlf
+
+# Preserve the exact bytes of supplied icon source artwork across platforms.
+branding/source/* -text

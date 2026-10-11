@@ -114,12 +114,38 @@ public static class PhysicalConsoleEligibilityPolicy
                     observation);
 
             case InputDesktopCategory.Default:
-                return PhysicalConsoleEligibility.Eligible(observation);
+                break;
 
             default:
                 return PhysicalConsoleEligibility.Denied(
                     PhysicalConsoleDenialReason.DesktopNotDefault,
                     observation);
         }
+
+        // Lock state: independent final gate. WTSActive and Default desktop
+        // never substitute for an explicitly unlocked session. Query failure,
+        // missing/malformed data, locked, and unknown all deny.
+        if (!observation.FirstPass.LockQuerySucceeded || !observation.SecondPass.LockQuerySucceeded)
+        {
+            return PhysicalConsoleEligibility.Denied(
+                PhysicalConsoleDenialReason.LockQueryFailed,
+                observation);
+        }
+
+        if (observation.FirstPass.LockState == WtsSessionLockState.Locked)
+        {
+            return PhysicalConsoleEligibility.Denied(
+                PhysicalConsoleDenialReason.SessionLocked,
+                observation);
+        }
+
+        if (observation.FirstPass.LockState != WtsSessionLockState.Unlocked)
+        {
+            return PhysicalConsoleEligibility.Denied(
+                PhysicalConsoleDenialReason.UnknownLockState,
+                observation);
+        }
+
+        return PhysicalConsoleEligibility.Eligible(observation);
     }
 }

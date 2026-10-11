@@ -13,13 +13,17 @@ public class PhysicalConsoleEligibilityPolicyTests
         uint processSessionId = 2,
         int connectState = Active,
         int protocolType = ConsoleProtocol,
-        bool wtsQuerySucceeded = true)
+        bool wtsQuerySucceeded = true,
+        WtsSessionLockState lockState = WtsSessionLockState.Unknown,
+        bool lockQuerySucceeded = false)
         => new(
             new WtsSessionId(physicalConsoleSessionId),
             new WtsSessionId(processSessionId),
             connectState,
             protocolType,
-            wtsQuerySucceeded);
+            wtsQuerySucceeded,
+            lockState,
+            lockQuerySucceeded);
 
     private static PhysicalConsoleObservation Observation(
         ConsolePassFacts? first = null,
@@ -40,7 +44,9 @@ public class PhysicalConsoleEligibilityPolicyTests
     [Fact]
     public void StableActiveConsoleOnDefaultDesktop_IsEligible()
     {
-        var result = Evaluate(Observation());
+        // Explicit unlocked flag required: default lock fact is Unknown.
+        var unlocked = Pass(lockState: WtsSessionLockState.Unlocked, lockQuerySucceeded: true);
+        var result = Evaluate(Observation(first: unlocked, second: unlocked));
 
         Assert.True(result.IsEligible);
         Assert.Equal(PhysicalConsoleDenialReason.Eligible, result.Reason);
@@ -347,5 +353,82 @@ public class PhysicalConsoleEligibilityPolicyTests
             second: Pass(protocolType: WtsProtocolTypeValues.Console)));
 
         Assert.Equal(PhysicalConsoleDenialReason.ObservationUnstable, result.Reason);
+    }
+
+    // --- Lock state (WTSSessionInfoEx SessionFlags) ---
+
+    [Fact]
+    public void ActiveDefaultButLocked_Denies()
+    {
+        // The bug case: WTSActive + Default + protocol 0 but Win+L locked.
+        var result = Evaluate(Observation(
+            first: Pass(lockState: WtsSessionLockState.Locked, lockQuerySucceeded: true)));
+
+        Assert.False(result.IsEligible);
+        Assert.Equal(PhysicalConsoleDenialReason.SessionLocked, result.Reason);
+    }
+
+    [Fact]
+    public void UnknownLockState_Denies()
+    {
+        var result = Evaluate(Observation(
+            first: Pass(lockState: WtsSessionLockState.Unknown, lockQuerySucceeded: true)));
+
+        Assert.False(result.IsEligible);
+        Assert.Equal(PhysicalConsoleDenialReason.UnknownLockState, result.Reason);
+    }
+
+    [Fact]
+    public void LockQueryFailed_Denies()
+    {
+        // Lock query fails in both passes (consistent): LockQueryFailed.
+        var failed = Pass(lockState: WtsSessionLockState.Unknown, lockQuerySucceeded: false);
+        var result = Evaluate(Observation(first: failed, second: failed));
+
+        Assert.False(result.IsEligible);
+        Assert.Equal(PhysicalConsoleDenialReason.LockQueryFailed, result.Reason);
+    }
+
+    [Fact]
+    public void LockQueryResultChangedBetweenPasses_DeniesUnstable()
+    {
+        // Lock query succeeds in one pass and fails in the other: transition.
+        var result = Evaluate(Observation(
+            first: Pass(lockState: WtsSessionLockState.Unlocked, lockQuerySucceeded: true),
+            second: Pass(lockState: WtsSessionLockState.Unknown, lockQuerySucceeded: false)));
+
+        Assert.False(result.IsEligible);
+        Assert.Equal(PhysicalConsoleDenialReason.ObservationUnstable, result.Reason);
+    }
+
+    [Fact]
+    public void LockChangedBetweenPasses_DeniesUnstable()
+    {
+        var result = Evaluate(Observation(
+            first: Pass(lockState: WtsSessionLockState.Unlocked, lockQuerySucceeded: true),
+            second: Pass(lockState: WtsSessionLockState.Locked, lockQuerySucceeded: true)));
+
+        Assert.False(result.IsEligible);
+        Assert.Equal(PhysicalConsoleDenialReason.ObservationUnstable, result.Reason);
+    }
+
+    [Fact]
+    public void DefaultLockFact_IsUnknownNotUnlocked()
+    {
+        var pass = default(ConsolePassFacts);
+
+        Assert.Equal(WtsSessionLockState.Unknown, pass.LockState);
+        Assert.False(pass.LockQuerySucceeded);
+    }
+
+    [Fact]
+    public void MissingLockFacts_DenyDespiteActiveDefaultConsole()
+    {
+        // A caller using the original five-argument constructor has no lock evidence.
+        var unobserved = new ConsolePassFacts(
+            new WtsSessionId(2), new WtsSessionId(2), Active, ConsoleProtocol, true);
+        var result = Evaluate(Observation(first: unobserved, second: unobserved));
+        Assert.False(result.IsEligible);
+        Assert.Equal(PhysicalConsoleDenialReason.LockQueryFailed, result.Reason);
     }
 }

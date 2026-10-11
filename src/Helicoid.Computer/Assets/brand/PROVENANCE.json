@@ -1,45 +1,47 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "copiedOn": "2026-10-10",
   "updatedOn": "2026-10-10",
-  "canonicalSource": "assets/brand/ in the Helicoid main workspace",
-  "provenance": "User-supplied original branding assets (manifest.json providedOn 2026-10-09). Copied as source only.",
+  "canonicalSource": "apps/windows/branding (Windows role-specific icons) and assets/brand/ in the Helicoid main workspace",
+  "provenance": "User-supplied exact Windows computer icon (dark background), 2026-10-10. Supersedes previous Windows shared-original HS App icon.icon artwork for the computer role. Mac assets are untouched.",
   "windowsAssignment": {
     "platform": "Windows",
-    "appRole": "manager and monitored computer",
-    "source": "HS App icon.icon",
-    "status": "Existing original source retained; native Windows icon exports not generated"
+    "appRole": "computer",
+    "source": "branding/source/hs-computer-windowsicon.png + hs-computer-windowsicon.svg",
+    "generated": "branding/generated/hs-computer-windowsicon.ico",
+    "status": "Role-specific ICO wired as ApplicationIcon (PE) and AppWindow.SetIcon (window/taskbar). Native compile/runtime unverified until Windows CI."
   },
   "notes": [
-    "Windows uses the original HS App icon.icon for both manager and monitored computer. That matches docs/ui.md and the brand manifest Windows assignment.",
-    "No fabricated .ico, .png scale set, or StoreLogo export is generated here.",
-    "Native Windows package icon integration remains unproven on a Windows build host."
+    "Computer uses the dark-background hs-computer-windowsicon artwork. Manager uses the blue-background hs-manager-windowsicon artwork. The previous shared HS App icon.icon assignment is superseded on Windows only.",
+    "branding/source/*.svg are source-only and are not copied to runtime output. The multi-resolution .ico is Content with CopyToOutputDirectory and is staged beside the published exe for SetIcon.",
+    "Conversion recipe and hashes live in branding/PROVENANCE.json. Verification is scripts/verify-windows-icons.py.",
+    "Package.appxmanifest VisualElements logo paths and expected image sizes are unchanged."
   ],
   "files": [
     {
-      "path": "HS App icon.icon/icon.json",
-      "role": "Windows manager and endpoint layered icon source metadata",
-      "sha256": "ae154c552dcf8b8e2d7c16b6fb355013e9133f8df9410bb87746913a20398eca"
+      "path": "branding/source/hs-computer-windowsicon.svg",
+      "role": "Source-only vector original",
+      "sha256": "ae4ede6da2920312c8abc243087747f724a0b7e5a028f21af5ecd86cc64a22cf"
     },
     {
-      "path": "HS App icon.icon/Assets/hs stripe.svg",
-      "role": "Stripe layer",
-      "sha256": "0d41b93ce1c4ee017e4516534bb1884c77978f9a7ff6edf6ad633857d560fb01"
+      "path": "branding/source/hs-computer-windowsicon.png",
+      "role": "Exact 2000x2000 RGBA raster source for ICO",
+      "sha256": "191d74434f21ab77130b5b76e7bf6a1494d117443af504930b8e27affbc007a9"
     },
     {
-      "path": "HS App icon.icon/Assets/hs text.svg",
-      "role": "Text layer",
-      "sha256": "24c05bca221ca5455086a269e7b9b68d5d503c1608d73d57428c31eb733f3aee"
+      "path": "branding/generated/hs-computer-windowsicon.ico",
+      "role": "Multi-resolution role icon (16,24,32,48,64,128,256)",
+      "sha256": "ee691dc8b0030caaf37d66a374e15b89b560d291741700b99a5ce3c4b2a69f68"
+    }
+  ],
+  "unusedScratch": [
+    {
+      "path": "HS App icon.icon",
+      "role": "Previous shared Windows artwork; superseded for computer by the role-specific icon above. Retained, not deleted."
     },
     {
       "path": "hs logo.svg",
-      "role": "Logo, dark lettering for light surfaces",
-      "sha256": "36455cf5b44d1d3a72d5218de5433f53a332f37cc4acc9a31aaa9e643086d271"
-    },
-    {
-      "path": "hs logo white.svg",
-      "role": "Logo, white lettering for dark surfaces",
-      "sha256": "12b5df88c873c892f4eee969996b9b26254d9f62743805a9e6d3aa277fab5869"
+      "role": "Logo with dark lettering for light surfaces (Package.appxmanifest Logo path unchanged)"
     }
   ]
 }
