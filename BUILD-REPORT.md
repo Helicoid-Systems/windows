@@ -287,13 +287,13 @@ Host: macOS (Darwin), arm64 — **not a Windows runtime**. SDK:
 | Check | Command | Result |
 | --- | --- | --- |
 | Domain tests (locked suite) | `dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release` | **PASS** — 292 tests, 0 failed |
-| Integration project (portable facts) | `dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release` | **PASS** — 10 passed, **37 skipped** (real xUnit skip: `Requires Windows runtime`) |
+| Integration project (portable facts) | `dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release` | **PASS** — 10 passed, **35 skipped** (real xUnit skip: `Requires Windows runtime`) |
 | CaptureWorker build | `dotnet build src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj -c Release` | **PASS** — 0 warnings, 0 errors |
 | Worker surface audit | `rg` for capture/input/network APIs | **PASS** — none in `Helicoid.CaptureWorker` + `Helicoid.Domain/Worker` |
 | Role icons preserved | `shasum -a 256` | **PASS** — `HS App icon.icon/icon.json` = `ae154c55…` (both apps) |
 | Workflow YAML | `ruby -ryaml -e YAML.load_file(...)` | **PASS** |
 
-The 37 skipped tests are `[WindowsFact]`/`[WindowsTheory]` and are **not**
+The 35 skipped tests are `[WindowsFact]`/`[WindowsTheory]` and are **not**
 native proof. They execute on Windows CI only.
 
 ### What this revision added
@@ -377,7 +377,7 @@ non-Windows).
 | Check | Result |
 | --- | --- |
 | Domain tests | **292 passed, 0 failed** |
-| Integration (portable facts) | **10 passed, 37 skipped** (real xUnit skip) |
+| Integration (portable facts) | **10 passed, 35 skipped** (real xUnit skip) |
 | CaptureWorker build | 0 warnings/errors |
 | Worker runtime bundle contents | exe + dll + deps.json + runtimeconfig.json + WindowsPlatform.dll + Domain.dll present |
 | Capture/input/network surface | **None** in worker path |
@@ -386,3 +386,19 @@ non-Windows).
 **Not claimed:** native Windows runtime proof. The stalled CI run is **not**
 accepted as verification. A fresh Windows CI run with the bounded diagnostics
 is required.
+
+## DPAPI regression repair, 11 October 2026
+
+Native Windows CI at `aa4e07e` completed in 26 seconds: 292 domain tests
+passed; 44 of 45 integration tests passed. The remaining test flipped an
+encrypted DPAPI byte but expected structural corruption. The production
+`DecryptionFailed` denial was correct and remains unchanged. Three deterministic
+tests now distinguish malformed version/length from authenticated blob tampering,
+assert null plaintext and preserve the damaged file without automatic recreation.
+
+Coordinator reproduction on macOS: `dotnet test` of the integration project
+with locked restore passes ten portable tests and reports 37 native skips
+(47 total). These skips are not Windows evidence. Sanitized MiMo metadata
+confirms `xiaomi/mimo-v2.6-pro`; the coordinator reviewed the three-file diff.
+A fresh native Windows CI run is required before the integration pin advances.
+The earlier 35-skip rows above retain the results of their earlier revisions.
