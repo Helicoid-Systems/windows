@@ -41,7 +41,7 @@ dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTest
 Portable pure-protocol facts run everywhere. Windows-native facts
 (`[WindowsFact]` — named pipes, Job Objects, kernel PID/session/SID identity,
 process launch) report a real xUnit **skip** on non-Windows and are mandatory
-on Windows CI. Last local run (macOS): **10 passed, 35 skipped** — the 35
+on Windows CI. Last local run (macOS): **10 passed, 37 skipped** — the 37
 skips are not native proof.
 
 Native CI is bounded: job/step `timeout-minutes`, `dotnet test --blame-hang

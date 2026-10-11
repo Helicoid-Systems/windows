@@ -560,40 +560,145 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
     }
 
     // =================================================================
-    // Test 13: EnrollmentStorage — tampered file rejected
+    // Test 13: EnrollmentStorage — deterministic tamper classification
+    //
+    // Production format: [4-byte version][4-byte plaintext length][DPAPI blob].
+    // Header damage (version or length) is structural corruption.
+    // Blob damage is authenticated-DPAPI tampering and must be classified
+    // DecryptionFailed (not Corrupted) with null plaintext. Production
+    // classification is not changed by this test.
     // =================================================================
 
-    [WindowsFact]
-    public void EnrollmentStorage_TamperedFile_Corrupted()
-    {
+    private const int EnrollmentHeaderSize = 8;
 
+    /// <summary>
+    /// Create a valid enrollment file in a disposable owned dir and return
+    /// the on-disk bytes. Asserts creation success and sufficient length.
+    /// An unrelated sibling file is planted and must survive untouched.
+    /// </summary>
+    private static (string TempDir, string StoragePath, byte[] FileBytes, string UnrelatedPath) CreateValidEnrollmentFile()
+    {
         string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+
+        // Unrelated data in the owned dir must be preserved by all operations.
+        string unrelatedPath = Path.Combine(tempDir, "unrelated.txt");
+        File.WriteAllText(unrelatedPath, "preserve-me");
+
+        var storage = new EnrollmentStorage(tempDir);
+        byte[] secret = [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18, 0x29];
+        var createResult = storage.Create(secret);
+        Assert.Equal(EnrollmentStorageResult.Success, createResult);
+
+        string storagePath = storage.StoragePath;
+        Assert.True(File.Exists(storagePath));
+
+        byte[] fileBytes = File.ReadAllBytes(storagePath);
+        Assert.True(fileBytes.Length > EnrollmentHeaderSize,
+            $"file must hold a DPAPI blob, length was {fileBytes.Length}");
+
+        // Format sanity: version is the current version.
+        Assert.Equal(1u, BitConverter.ToUInt32(fileBytes, 0));
+        // Plaintext length recorded in the header matches the secret we wrote.
+        Assert.Equal(secret.Length, BitConverter.ToInt32(fileBytes, 4));
+
+        return (tempDir, storagePath, fileBytes, unrelatedPath);
+    }
+
+    private static void AssertDamagedFileUnchangedAndNotRecreated(
+        string tempDir,
+        string storagePath,
+        byte[] expectedDamagedBytes,
+        string unrelatedPath)
+    {
+        // The damaged file must be left exactly as written (no auto-repair).
+        Assert.True(File.Exists(storagePath));
+        Assert.Equal(expectedDamagedBytes, File.ReadAllBytes(storagePath));
+
+        // No automatic state recreation: Create still refuses to overwrite.
+        var storage = new EnrollmentStorage(tempDir);
+        Assert.Equal(EnrollmentStorageResult.AlreadyExists, storage.Create([1, 2, 3]));
+
+        // Unrelated data in the same owned dir is untouched.
+        Assert.True(File.Exists(unrelatedPath));
+        Assert.Equal("preserve-me", File.ReadAllText(unrelatedPath));
+    }
+
+    [WindowsFact]
+    public void EnrollmentStorage_TamperedHeaderVersion_ReturnsCorrupted()
+    {
+        var (tempDir, storagePath, fileBytes, unrelatedPath) = CreateValidEnrollmentFile();
         try
         {
+            // Deterministic header damage: version field at offset 0.
+            fileBytes[0] = (byte)~fileBytes[0];
+            File.WriteAllBytes(storagePath, fileBytes);
+
             var storage = new EnrollmentStorage(tempDir);
+            var openResult = storage.Open(out byte[]? plaintext);
 
-            // Create valid state.
-            byte[] secret = [1, 2, 3, 4, 5];
-            var createResult = storage.Create(secret);
-            Assert.Equal(EnrollmentStorageResult.Success, createResult);
-
-            // Tamper with the file (flip some bytes).
-            string storagePath = storage.StoragePath;
-            Assert.True(File.Exists(storagePath));
-
-            byte[] fileBytes = File.ReadAllBytes(storagePath);
-            if (fileBytes.Length > 10)
-            {
-                fileBytes[10] = (byte)~fileBytes[10];
-                File.WriteAllBytes(storagePath, fileBytes);
-            }
-
-            // Re-open — should report corruption.
-            var openResult = storage.Open(out _);
             Assert.Equal(EnrollmentStorageResult.Corrupted, openResult);
+            Assert.Null(plaintext);
 
-            // Cleanup.
-            storage.Forget();
+            AssertDamagedFileUnchangedAndNotRecreated(tempDir, storagePath, fileBytes, unrelatedPath);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void EnrollmentStorage_TamperedHeaderLength_ReturnsCorrupted()
+    {
+        var (tempDir, storagePath, fileBytes, unrelatedPath) = CreateValidEnrollmentFile();
+        try
+        {
+            // Deterministic header damage: plaintext-length field at offset 4
+            // set to a negative value, which must be rejected as corruption.
+            BitConverter.TryWriteBytes(fileBytes.AsSpan(4, 4), -1);
+            File.WriteAllBytes(storagePath, fileBytes);
+
+            var storage = new EnrollmentStorage(tempDir);
+            var openResult = storage.Open(out byte[]? plaintext);
+
+            Assert.Equal(EnrollmentStorageResult.Corrupted, openResult);
+            Assert.Null(plaintext);
+
+            AssertDamagedFileUnchangedAndNotRecreated(tempDir, storagePath, fileBytes, unrelatedPath);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void EnrollmentStorage_TamperedEncryptedBlob_ReturnsDecryptionFailed()
+    {
+        var (tempDir, storagePath, fileBytes, unrelatedPath) = CreateValidEnrollmentFile();
+        try
+        {
+            // Deterministic authenticated-DPAPI tamper: flip the final byte of
+            // the file. The format is [version u32][plaintextLen i32][DPAPI
+            // blob], so offset (Length-1) is the tail of DPAPI pbData — the
+            // authenticated ciphertext payload. Flipping it must make
+            // CryptUnprotectData fail.
+            int tamperOffset = fileBytes.Length - 1;
+            Assert.True(tamperOffset >= EnrollmentHeaderSize,
+                "tamper offset must land inside the DPAPI blob");
+            fileBytes[tamperOffset] = (byte)~fileBytes[tamperOffset];
+            File.WriteAllBytes(storagePath, fileBytes);
+
+            var storage = new EnrollmentStorage(tempDir);
+            var openResult = storage.Open(out byte[]? plaintext);
+
+            // Production contract: tampered authenticated blob is
+            // DecryptionFailed, not Corrupted. Do not weaken this.
+            Assert.Equal(EnrollmentStorageResult.DecryptionFailed, openResult);
+            Assert.Null(plaintext);
+
+            AssertDamagedFileUnchangedAndNotRecreated(tempDir, storagePath, fileBytes, unrelatedPath);
         }
         finally
         {
