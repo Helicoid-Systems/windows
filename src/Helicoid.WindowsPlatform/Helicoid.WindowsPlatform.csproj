@@ -18,4 +18,9 @@
     <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Helicoid.WindowsIntegrationTests" />
+    <InternalsVisibleTo Include="Helicoid.Domain.Tests" />
+  </ItemGroup>
+
 </Project>

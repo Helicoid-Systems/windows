@@ -1337,6 +1337,563 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         if (!PlatformHelper.IsWindows) return null;
         return KernelIdentity.ReadProcessTokenSid(Kernel32Native.GetCurrentProcessId());
     }
+
+
+    // =================================================================
+    // DeviceKeyStorage — DPAPI persistent device identity (15 Oct review)
+    // Native Windows only: real DPAPI, real Win32 handles, no skip-as-proof.
+    // =================================================================
+
+    [WindowsFact]
+    public void DeviceKeyStorage_CreateOpenReopen_SameKey()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            var create = storage.CreateNew(out var seed1, out var pub1);
+            Assert.Equal(DeviceKeyStorageResult.Success, create);
+            Assert.Equal(32, seed1.Length);
+            Assert.Equal(32, pub1.Length);
+
+            var storage2 = new DeviceKeyStorage(tempDir);
+            var open = storage2.Open(out var seed2, out var pub2);
+            Assert.Equal(DeviceKeyStorageResult.Success, open);
+            Assert.Equal(seed1, seed2);
+            Assert.Equal(pub1, pub2);
+
+            // Reopen after dispose of first instance.
+            storage.Dispose();
+            var storage3 = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage3.Open(out var seed3, out var pub3));
+            Assert.Equal(pub1, pub3);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_CreateThenSign_ReopensStableIdentity()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out var seed, out var pub));
+
+            using var key = Helicoid.Domain.Client.Ed25519DeviceKey.ImportSeed(seed);
+            var message = System.Text.Encoding.UTF8.GetBytes("hs-auth-v2|deployment:d|challenge:c|operation:session|manager:x");
+            var signature = key.Sign(message);
+            Assert.True(Helicoid.Domain.Client.Ed25519DeviceKey.VerifyHexSignature(
+                key.PublicKeyHex, message, Convert.ToHexString(signature)));
+
+            var reopened = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, reopened.Open(out var seed2, out var pub2));
+            Assert.Equal(pub, pub2);
+            using var key2 = Helicoid.Domain.Client.Ed25519DeviceKey.ImportSeed(seed2);
+            Assert.Equal(key.PublicKeyHex, key2.PublicKeyHex);
+            Assert.True(Helicoid.Domain.Client.Ed25519DeviceKey.VerifyHexSignature(
+                key2.PublicKeyHex, message, Convert.ToHexString(signature)));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_TwoCreators_ShareSingleWinner()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var a = new DeviceKeyStorage(tempDir);
+            var b = new DeviceKeyStorage(tempDir);
+
+            DeviceKeyStorageResult ra = DeviceKeyStorageResult.IoError, rb = DeviceKeyStorageResult.IoError;
+            byte[] seedA = [], pubA = [], seedB = [], pubB = [];
+            var t1 = Task.Run(() => ra = a.OpenOrCreate(out seedA, out pubA));
+            var t2 = Task.Run(() => rb = b.OpenOrCreate(out seedB, out pubB));
+            Task.WaitAll(t1, t2);
+
+            Assert.Equal(DeviceKeyStorageResult.Success, ra);
+            Assert.Equal(DeviceKeyStorageResult.Success, rb);
+            Assert.Equal(pubA, pubB);
+            Assert.Equal(seedA, seedB);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_TwoCreators_SynchronizedBeforeCreate_ShareSingleWinner()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var a = new DeviceKeyStorage(tempDir);
+            var b = new DeviceKeyStorage(tempDir);
+
+            // Synchronize both creators at the real before-directory-create
+            // boundary so both observe absent and race CreateDirectoryW.
+            using var barrier = new Barrier(2);
+            a.BeforeDirectoryCreate = () => barrier.SignalAndWait(TimeSpan.FromSeconds(10));
+            b.BeforeDirectoryCreate = () => barrier.SignalAndWait(TimeSpan.FromSeconds(10));
+
+            DeviceKeyStorageResult ra = DeviceKeyStorageResult.IoError, rb = DeviceKeyStorageResult.IoError;
+            byte[] seedA = [], pubA = [], seedB = [], pubB = [];
+            var t1 = Task.Run(() => ra = a.OpenOrCreate(out seedA, out pubA));
+            var t2 = Task.Run(() => rb = b.OpenOrCreate(out seedB, out pubB));
+            Assert.True(Task.WaitAll(new[] { t1, t2 }, TimeSpan.FromSeconds(30)));
+
+            Assert.Equal(DeviceKeyStorageResult.Success, ra);
+            Assert.Equal(DeviceKeyStorageResult.Success, rb);
+            Assert.Equal(pubA, pubB);
+            Assert.Equal(seedA, seedB);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_NoOverwrite_OnSecondCreate()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out var seed1, out var pub1));
+            Assert.Equal(DeviceKeyStorageResult.AlreadyExists, storage.CreateNew(out _, out _));
+
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.Open(out _, out var pub2));
+            Assert.Equal(pub1, pub2);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_PreexistingTemp_IsNotDeleted()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // Foreign temp that this implementation did not create must survive.
+            string foreignTemp = Path.Combine(tempDir, "device-identity.foreign.tmp");
+            File.WriteAllText(foreignTemp, "preserve-me");
+
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+            Assert.True(File.Exists(foreignTemp));
+            Assert.Equal("preserve-me", File.ReadAllText(foreignTemp));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_SymlinkLeaf_IsRefused()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        string target = Path.Combine(tempDir, "target.bin");
+        File.WriteAllBytes(target, new byte[] { 1, 2, 3 });
+        string link = Path.Combine(tempDir, "device-identity.bin");
+        try
+        {
+            // Directory.CreateSymbolicLink / File.CreateSymbolicLink
+            File.CreateSymbolicLink(link, target);
+
+            var storage = new DeviceKeyStorage(tempDir);
+            var open = storage.Open(out _, out _);
+            Assert.Equal(DeviceKeyStorageResult.ReparsePointRefused, open);
+        }
+        catch (IOException ex) when (ex.HResult is unchecked((int)0x80070005) or unchecked((int)0x80070522))
+        {
+            // Privilege unavailable for symlink creation in this environment.
+            // Fail closed rather than claiming a native proof.
+            Assert.Fail("Symbolic link creation unavailable: " + ex.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_HardlinkLeaf_IsRefused()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+
+            string second = Path.Combine(tempDir, "hardlink.bin");
+            // CreateHardLinkW: hard link to the device-identity.bin
+            if (!TestNative.CreateHardLinkW(second, storage.StoragePath, IntPtr.Zero))
+            {
+                Assert.Fail("CreateHardLinkW failed: " + Marshal.GetLastWin32Error());
+            }
+
+            var reopened = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.ReparsePointRefused, reopened.Open(out _, out _));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_BroadEveryoneDacl_IsRefused()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+
+            // Grant Everyone:GENERIC_ALL on the private key file.
+            Assert.True(TestNative.ConvertStringSidToSidW("S-1-1-0", out var everyoneSid));
+            try
+            {
+                // EXPLICIT_ACCESS_W is 32 bytes on x64: Trustee(16)+AccessMask(4)+AccessMode(4)+Inheritance(4)+pMultipleTrustee(4)+pad
+                // Layout: [grfAccessPermissions u32][grfAccessMode u32][grfInheritance u32][pad u32]
+                //         [Trustee: pMultipleTrustee(8)][TrusteeForm u32][TrusteeType u32][ptstrName(8)]
+                // We use SetNamedSecurityInfo with a freshly built ACL via SetEntriesInAclW.
+                var entry = Marshal.AllocHGlobal(56);
+                try
+                {
+                    for (int i = 0; i < 56; i++) Marshal.WriteByte(entry, i, 0);
+                    Marshal.WriteInt32(entry, 0, unchecked((int)0x10000000)); // GENERIC_ALL
+                    Marshal.WriteInt32(entry, 4, 0); // SET_ACCESS
+                    Marshal.WriteInt32(entry, 8, 0); // NO_INHERITANCE
+                    // TRUSTEE at offset 16: pMultipleTrustee=0, TrusteeForm=1 (SID), TrusteeType=1 (User/WellKnownGroup), ptstrName=SID
+                    Marshal.WriteIntPtr(entry, 16 + 8, IntPtr.Zero); // pMultipleTrustee already 0
+                    Marshal.WriteInt32(entry, 24, 1); // TRUSTEE_IS_SID
+                    Marshal.WriteInt32(entry, 28, 1); // TRUSTEE_IS_USER
+                    Marshal.WriteIntPtr(entry, 32, everyoneSid);
+
+                    var status = TestNative.SetEntriesInAclW(1, entry, IntPtr.Zero, out var newAcl);
+                    Assert.Equal(0u, status);
+                    try
+                    {
+                        var set = TestNative.SetNamedSecurityInfoW(
+                            storage.StoragePath,
+                            1 /*SE_FILE_OBJECT*/,
+                            4 /*DACL_SECURITY_INFORMATION*/,
+                            IntPtr.Zero,
+                            IntPtr.Zero,
+                            newAcl,
+                            IntPtr.Zero);
+                        Assert.Equal(0u, set);
+                    }
+                    finally
+                    {
+                        Kernel32Native.LocalFree(newAcl);
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(entry);
+                }
+            }
+            finally
+            {
+                Kernel32Native.LocalFree(everyoneSid);
+            }
+
+            var reopened = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.OwnershipMismatch, reopened.Open(out _, out _));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_PrivateAcl_CreateSignReopen_Succeeds()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out var seed, out var pub));
+            using var key = Helicoid.Domain.Client.Ed25519DeviceKey.ImportSeed(seed);
+            var msg = System.Text.Encoding.UTF8.GetBytes("hs-auth-v2|deployment:d|challenge:c|operation:session|manager:x");
+            var sig = key.Sign(msg);
+            Assert.True(Helicoid.Domain.Client.Ed25519DeviceKey.VerifyHexSignature(
+                key.PublicKeyHex, msg, Convert.ToHexString(sig)));
+
+            var reopened = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, reopened.Open(out var seed2, out var pub2));
+            Assert.Equal(pub, pub2);
+            Assert.Equal(seed, seed2);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_ArbitraryForeignSidGrant_IsRefused()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+
+            // Grant a concrete foreign principal (Network Service) full control.
+            // S-1-5-20 is not in the trusted allowlist (user/SYSTEM/Admins/CREATOR OWNER).
+            Assert.True(TestNative.ConvertStringSidToSidW("S-1-5-20", out var foreignSid));
+            try
+            {
+                Assert.Equal(0u, TestNative.GrantFullControlToSid(storage.StoragePath, foreignSid));
+            }
+            finally
+            {
+                Kernel32Native.LocalFree(foreignSid);
+            }
+
+            var reopened = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.OwnershipMismatch, reopened.Open(out _, out _));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_IntermediateJunction_IsRefused()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        string root = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        string real = Path.Combine(root, "real");
+        string junction = Path.Combine(root, "junction");
+        Directory.CreateDirectory(real);
+        try
+        {
+            // Junction: intermediate reparse parent must be refused.
+            Directory.CreateSymbolicLink(junction, real);
+            string productDir = Path.Combine(junction, "product");
+            Directory.CreateDirectory(productDir);
+
+            var storage = new DeviceKeyStorage(productDir);
+            var create = storage.CreateNew(out _, out _);
+            Assert.Equal(DeviceKeyStorageResult.ReparsePointRefused, create);
+        }
+        catch (IOException ex)
+        {
+            Assert.Fail("Junction creation unavailable: " + ex.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_ParentReplacement_WhileHeld_IsRefused()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        string productDir = Path.Combine(root, "product");
+        Directory.CreateDirectory(productDir);
+        try
+        {
+            var storage = new DeviceKeyStorage(productDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+
+            // Hold the real CreateNew path after its handles are acquired and
+            // before leaf mutation/publish (per-instance barrier, not a helper).
+            using var gate = new ManualResetEventSlim(false);
+            using var entered = new ManualResetEventSlim(false);
+            var createDir = Path.Combine(root, "product2");
+            Directory.CreateDirectory(createDir);
+            var creating = new DeviceKeyStorage(createDir);
+            creating.BeforeLeafMutate = () =>
+            {
+                entered.Set();
+                Assert.True(gate.Wait(TimeSpan.FromSeconds(10)));
+            };
+
+            var createTask = Task.Run(() => creating.CreateNew(out _, out _));
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(10)));
+
+            // Real create handles are held: parent rename must be blocked.
+            string alt = Path.Combine(root, "product2-replaced");
+            Assert.Throws<IOException>(() => Directory.Move(createDir, alt));
+
+            gate.Set();
+            Assert.Equal(DeviceKeyStorageResult.Success, createTask.GetAwaiter().GetResult());
+
+            // Original key is readable after the barrier released the chain.
+            Assert.Equal(DeviceKeyStorageResult.Success, creating.Open(out _, out _));
+
+            // Existing-file pin path still blocks rename while held.
+            Assert.Equal(DeviceKeyStorageResult.Success,
+                Helicoid.WindowsPlatform.DeviceKeyStorage.TryPinDirectory(productDir, out var pin));
+            Assert.NotNull(pin);
+            Assert.Throws<IOException>(() => Directory.Move(productDir, Path.Combine(root, "product-replaced")));
+            pin!.Dispose();
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_BeforePinPathSwap_IsRefused()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        string real = Path.Combine(root, "real");
+        string productDir = Path.Combine(root, "product");
+        Directory.CreateDirectory(real);
+        Directory.CreateDirectory(productDir);
+        try
+        {
+            // Swap the product path for a junction before pinning.
+            Directory.Move(productDir, productDir + ".old");
+            Directory.CreateSymbolicLink(productDir, real);
+
+            Assert.Equal(DeviceKeyStorageResult.ReparsePointRefused,
+                Helicoid.WindowsPlatform.DeviceKeyStorage.TryPinDirectory(productDir, out var pin));
+            Assert.Null(pin);
+        }
+        catch (IOException ex)
+        {
+            Assert.Fail("Junction creation unavailable: " + ex.Message);
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_HeldObject_DeletionIsBlockedOrHeld()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+
+            // Open pins the leaf without FILE_SHARE_DELETE.
+            var opened = new DeviceKeyStorage(tempDir);
+            // Forget uses handle disposition on a held owned handle.
+            Assert.Equal(DeviceKeyStorageResult.Forgotten, opened.Forget());
+            Assert.False(File.Exists(storage.StoragePath));
+            Assert.Equal(DeviceKeyStorageResult.NotFound, storage.Open(out _, out _));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_Forget_DeletesOnlyOwnedFile()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            string unrelated = Path.Combine(tempDir, "unrelated.txt");
+            Directory.CreateDirectory(tempDir);
+            File.WriteAllText(unrelated, "keep");
+
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+            Assert.Equal(DeviceKeyStorageResult.Forgotten, storage.Forget());
+            Assert.False(File.Exists(storage.StoragePath));
+            Assert.True(File.Exists(unrelated));
+            Assert.Equal(DeviceKeyStorageResult.NotFound, storage.Open(out _, out _));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+}
+
+/// <summary>
+/// TEST-ONLY CreateHardLinkW for ownership/race regressions.
+/// Verified against Microsoft docs (October 2026): fileapi.h / Kernel32.
+/// </summary>
+internal static class TestNative
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    public static extern bool CreateHardLinkW(string lpFileName, string lpExistingFileName, IntPtr lpSecurityAttributes);
+
+    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+    public static extern uint SetNamedSecurityInfoW(
+        string pObjectName,
+        uint objectType,
+        uint securityInformation,
+        System.IntPtr psidOwner,
+        System.IntPtr psidGroup,
+        System.IntPtr pDacl,
+        System.IntPtr pSacl);
+
+    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    public static extern uint SetEntriesInAclW(
+        uint cCountOfExplicitEntries,
+        System.IntPtr pListOfExplicitEntries,
+        System.IntPtr oldAcl,
+        out System.IntPtr newAcl);
+
+    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    public static extern bool ConvertStringSidToSidW(string stringSid, out System.IntPtr sid);
+
+    /// <summary>TEST-ONLY: grant GENERIC_ALL to an arbitrary SID for refusal proofs.</summary>
+    public static uint GrantFullControlToSid(string path, System.IntPtr sid)
+    {
+        var entry = System.Runtime.InteropServices.Marshal.AllocHGlobal(56);
+        try
+        {
+            for (int i = 0; i < 56; i++) System.Runtime.InteropServices.Marshal.WriteByte(entry, i, 0);
+            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 0, unchecked((int)0x10000000));
+            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 4, 0);
+            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 8, 0);
+            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 24, 1);
+            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 28, 1);
+            System.Runtime.InteropServices.Marshal.WriteIntPtr(entry, 32, sid);
+            var status = SetEntriesInAclW(1, entry, System.IntPtr.Zero, out var newAcl);
+            if (status != 0u) return status;
+            try
+            {
+                return SetNamedSecurityInfoW(path, 1, 4, System.IntPtr.Zero, System.IntPtr.Zero, newAcl, System.IntPtr.Zero);
+            }
+            finally
+            {
+                Helicoid.WindowsPlatform.Native.Kernel32Native.LocalFree(newAcl);
+            }
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.FreeHGlobal(entry);
+        }
+    }
 }
 
 /// <summary>

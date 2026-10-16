@@ -109,6 +109,16 @@ public sealed class LoginResponse
 
     [JsonPropertyName("mfa")]
     public MfaDto? Mfa { get; init; }
+
+    /// <summary>
+    /// V2 challenge completion only (contract rev2): server-derived approved
+    /// manager Ed25519 key (lowercase hex32) from the final approved-key
+    /// transaction. V1 responses omit this field. Native v2 clients bind this
+    /// value to the actual signer/challenge key; manager.public_identity is a
+    /// display label and is never cryptographic key authority.
+    /// </summary>
+    [JsonPropertyName("manager_public_key")]
+    public string? ManagerPublicKey { get; init; }
 }
 
 public sealed class SessionResponse

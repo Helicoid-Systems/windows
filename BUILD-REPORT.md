@@ -1,3 +1,17 @@
+## Coordinator native-auth candidate, 16 October 2026
+
+Coordinator independently reran the complete domain suite: **429 passed, zero
+failed/skipped**, and built WindowsIntegrationTests with `-warnaserror`: zero
+warnings/errors. Reviewed private-store fixes create protected objects atomically,
+pin ancestors before mutation, refuse foreign ACLs/reparse paths, retain exact
+Win32 create-race handling and include synchronized native race scenarios.
+Implementation metadata confirms `xiaomi-token-plan-ams/mimo-v2.6-pro`, `high`.
+
+Actual Win32/DPAPI execution, WinUI packaging and native race acceptance remain
+**Not Verified** pending the new feature-branch Windows CI run. Portable checks
+do not pass installed Windows 11, capture/input or the worker/admission checkpoint.
+No VM or production configuration was changed. Earlier dated entries follow.
+
 # BUILD-REPORT — Helicoid Windows (`apps/windows`)
 
 Current coordinator evidence (11 October 2026): `dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj` passed **387 tests, zero failures/skips** on macOS; `dotnet build src/Helicoid.Domain/Helicoid.Domain.csproj -warnaserror` passed with zero warnings/errors. The new transport uses sole pinned CA trust, native chain/hostname/EKU validation, bounded streaming, whole-operation cancellation and request registration that retains TLS resources until drain. Tests use actual disposable TLS sockets, including deterministic handshake/close gates. Exported MiMo metadata confirms `xiaomi/mimo-v2.6-pro`.
@@ -408,3 +422,66 @@ with locked restore passes ten portable tests and reports 37 native skips
 confirms `xiaomi/mimo-v2.6-pro`; the coordinator reviewed the three-file diff.
 A fresh native Windows CI run is required before the integration pin advances.
 The earlier 35-skip rows above retain the results of their earlier revisions.
+
+
+## Native v2 device-key challenge sign-in (uncommitted candidate), 13–15 October 2026
+
+Package: pinned-HTTPS `POST /v2/auth/challenge` + `/complete` with Ed25519
+device-key proofs, conditional TOTP UI/state, and DPAPI persistent device
+identity. Wire contract: `native-auth-contract-v2.md` (completion binds
+top-level `manager_public_key`; `manager.public_identity` is display-only).
+
+### Proved on this host (macOS portable)
+
+| Check | Result |
+| --- | --- |
+| Domain tests Release | **425 passed, 0 failed** |
+| Domain + WindowsPlatform `-warnaserror` | 0 warnings / 0 errors |
+| WindowsIntegrationTests compile | 0 warnings / 0 errors |
+| NSec.Cryptography pin | 26.4.0 (MIT, libsodium; nuget.org contentHash in packages.lock.json) |
+
+### Not claimed (remain Windows CI / coordinator gates)
+
+- Native WinUI Manager build and live ConnectionPage TOTP UI threading
+- Actual DPAPI create/open/sign/reopen, two-creator race, broad-ACL/foreign
+  owner/link/hardlink denial, preexisting-temp preservation (tests exist in
+  `SupervisorIpcIntegrationTests`; they run under `WindowsFact` on CI only)
+- Normal-operation acceptance of production login (no live authority trust
+  is wired in this candidate; absent trust stays explicitly unavailable)
+- Media/control/hosting feature flags remain closed
+
+Coordinator reviews 2026-10-14 and 2026-10-15 (including the confirmed
+install-point cancel race) are addressed in this candidate and are subject
+to the same unaccepted status until review closes.
+
+
+### 15 October follow-ups (candidate, uncommitted)
+
+- Obsolete completion cleanup is token-scoped (`ClearSessionIfBearer`); a late
+  UI continuation cannot erase a replacement bearer. Cancel/SignOut still clear
+  the current bearer at user intent.
+- Client begin generation take-over is atomic under one lock.
+- Session lifetime is measured at **reception** (fresh clock after await) with
+  the same hard 7200s bound; no TTL padding. Delayed-7200s acceptance and
+  oversized/expired denial have causal regressions.
+- Domain suite: **429 passed, 0 failed** (Release).
+
+
+### Native store acceptance repairs (15 October, uncommitted)
+
+- Corrected `ACL_SIZE_INFORMATION` field offsets to the SDK layout.
+- Replaced SID blacklist with an explicit trusted-principal allowlist for
+  private key DACLs; foreign grants fail closed.
+- Intermediate ancestor walk refuses junctions; held objects omit
+  `FILE_SHARE_DELETE`; private ACL applied at leaf creation only.
+- Domain suite still **429 passed**. Native Windows runtime remains
+  **Not Verified** pending coordinator CI.
+
+
+### Private-store functional repair (16 October, uncommitted)
+
+- Correct protected-DACL flags on held-handle security updates (no SACL).
+- Private product-directory and temp-file creation via `SECURITY_ATTRIBUTES`.
+- Ancestors pinned before mutation; deterministic parent-replacement pin seam.
+- Domain **429 passed**; WindowsPlatform/IntegrationTests compile `-warnaserror`;
+  `actionlint` clean. Native Windows runtime remains **Not Verified** pending CI.

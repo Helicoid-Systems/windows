@@ -124,12 +124,15 @@ public sealed class PinnedHttpsTransport : IDisposable
     /// <summary>
     /// Bounded cancelable HTTPS request seam. Per-operation deadline covers
     /// connection, headers, and body. Redirects and non-2xx responses fail.
+    /// An optional bearer token is attached as Authorization only; it is never
+    /// placed on the request target and never logged.
     /// </summary>
     public async Task<byte[]> SendAsync(
         HttpMethod method,
         string requestTarget,
         HttpContent? content,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? bearerToken = null)
     {
         ArgumentNullException.ThrowIfNull(method);
 
@@ -149,6 +152,12 @@ public sealed class PinnedHttpsTransport : IDisposable
                 if (content is not null)
                 {
                     request.Content = content;
+                }
+
+                if (!string.IsNullOrEmpty(bearerToken))
+                {
+                    request.Headers.Authorization =
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", bearerToken);
                 }
 
                 HttpResponseMessage response;
