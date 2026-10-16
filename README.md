@@ -1,6 +1,6 @@
 # Helicoid Windows apps
 
-Uncommitted candidate: native pinned-HTTPS v2 device-key challenge sign-in
+Feature-branch candidate: native pinned-HTTPS v2 device-key challenge sign-in
 (contract rev2 completion-key binding) with conditional TOTP UI and DPAPI
 device-key storage. Not accepted pending coordinator review and a native
 Windows CI run. Portable domain tests and compilation are proved on this

@@ -1483,8 +1483,8 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
     [WindowsFact]
     public void DeviceKeyStorage_PreexistingTemp_IsNotDeleted()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempDir);
+        // Product-owned private directory via actual store create/forget.
+        string tempDir = ProductStoreFixture.CreateProductOwnedDirectory();
         try
         {
             // Foreign temp that this implementation did not create must survive.
@@ -1561,61 +1561,18 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
     [WindowsFact]
     public void DeviceKeyStorage_BroadEveryoneDacl_IsRefused()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        string tempDir = ProductStoreFixture.CreateProductOwnedDirectory();
         try
         {
             var storage = new DeviceKeyStorage(tempDir);
             Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
 
-            // Grant Everyone:GENERIC_ALL on the private key file.
-            Assert.True(TestNative.ConvertStringSidToSidW("S-1-1-0", out var everyoneSid));
-            try
-            {
-                // EXPLICIT_ACCESS_W is 32 bytes on x64: Trustee(16)+AccessMask(4)+AccessMode(4)+Inheritance(4)+pMultipleTrustee(4)+pad
-                // Layout: [grfAccessPermissions u32][grfAccessMode u32][grfInheritance u32][pad u32]
-                //         [Trustee: pMultipleTrustee(8)][TrusteeForm u32][TrusteeType u32][ptstrName(8)]
-                // We use SetNamedSecurityInfo with a freshly built ACL via SetEntriesInAclW.
-                var entry = Marshal.AllocHGlobal(56);
-                try
-                {
-                    for (int i = 0; i < 56; i++) Marshal.WriteByte(entry, i, 0);
-                    Marshal.WriteInt32(entry, 0, unchecked((int)0x10000000)); // GENERIC_ALL
-                    Marshal.WriteInt32(entry, 4, 0); // SET_ACCESS
-                    Marshal.WriteInt32(entry, 8, 0); // NO_INHERITANCE
-                    // TRUSTEE at offset 16: pMultipleTrustee=0, TrusteeForm=1 (SID), TrusteeType=1 (User/WellKnownGroup), ptstrName=SID
-                    Marshal.WriteIntPtr(entry, 16 + 8, IntPtr.Zero); // pMultipleTrustee already 0
-                    Marshal.WriteInt32(entry, 24, 1); // TRUSTEE_IS_SID
-                    Marshal.WriteInt32(entry, 28, 1); // TRUSTEE_IS_USER
-                    Marshal.WriteIntPtr(entry, 32, everyoneSid);
-
-                    var status = TestNative.SetEntriesInAclW(1, entry, IntPtr.Zero, out var newAcl);
-                    Assert.Equal(0u, status);
-                    try
-                    {
-                        var set = TestNative.SetNamedSecurityInfoW(
-                            storage.StoragePath,
-                            1 /*SE_FILE_OBJECT*/,
-                            4 /*DACL_SECURITY_INFORMATION*/,
-                            IntPtr.Zero,
-                            IntPtr.Zero,
-                            newAcl,
-                            IntPtr.Zero);
-                        Assert.Equal(0u, set);
-                    }
-                    finally
-                    {
-                        Kernel32Native.LocalFree(newAcl);
-                    }
-                }
-                finally
-                {
-                    Marshal.FreeHGlobal(entry);
-                }
-            }
-            finally
-            {
-                Kernel32Native.LocalFree(everyoneSid);
-            }
+            // Everyone full control + owner retained so the store can inspect.
+            string userSid = TestNative.CurrentUserSidString()
+                ?? throw new InvalidOperationException("no user sid");
+            Assert.Equal(0u, TestNative.GrantAclViaSddl(
+                storage.StoragePath,
+                "(A;;FA;;;S-1-1-0)(A;;FA;;;" + userSid + ")"));
 
             var reopened = new DeviceKeyStorage(tempDir);
             Assert.Equal(DeviceKeyStorageResult.OwnershipMismatch, reopened.Open(out _, out _));
@@ -1654,26 +1611,35 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
     [WindowsFact]
     public void DeviceKeyStorage_ArbitraryForeignSidGrant_IsRefused()
     {
-        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        string tempDir = ProductStoreFixture.CreateProductOwnedDirectory();
         try
         {
             var storage = new DeviceKeyStorage(tempDir);
             Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
 
-            // Grant a concrete foreign principal (Network Service) full control.
-            // S-1-5-20 is not in the trusted allowlist (user/SYSTEM/Admins/CREATOR OWNER).
-            Assert.True(TestNative.ConvertStringSidToSidW("S-1-5-20", out var foreignSid));
-            try
-            {
-                Assert.Equal(0u, TestNative.GrantFullControlToSid(storage.StoragePath, foreignSid));
-            }
-            finally
-            {
-                Kernel32Native.LocalFree(foreignSid);
-            }
+            // Network Service (S-1-5-20) is a real foreign principal; no external account.
+            Assert.Equal(0u, TestNative.GrantFullControlToSid(storage.StoragePath, "S-1-5-20"));
 
             var reopened = new DeviceKeyStorage(tempDir);
             Assert.Equal(DeviceKeyStorageResult.OwnershipMismatch, reopened.Open(out _, out _));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_UntrustedExistingDirectory_IsRefused()
+    {
+        // Explicit foreign grant makes this directory untrusted on every host.
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            Assert.Equal(0u, TestNative.GrantFullControlToSid(tempDir, "S-1-1-0"));
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.OwnershipMismatch, storage.CreateNew(out _, out _));
         }
         finally
         {
@@ -1714,10 +1680,14 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
     public void DeviceKeyStorage_ParentReplacement_WhileHeld_IsRefused()
     {
         string root = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
         string productDir = Path.Combine(root, "product");
-        Directory.CreateDirectory(productDir);
         try
         {
+            // Product-owned private directory via actual store create/forget.
+            string owned = ProductStoreFixture.CreateProductOwnedDirectory();
+            Directory.Move(owned, productDir);
+
             var storage = new DeviceKeyStorage(productDir);
             Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
 
@@ -1726,7 +1696,8 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
             using var gate = new ManualResetEventSlim(false);
             using var entered = new ManualResetEventSlim(false);
             var createDir = Path.Combine(root, "product2");
-            Directory.CreateDirectory(createDir);
+            string owned2 = ProductStoreFixture.CreateProductOwnedDirectory();
+            Directory.Move(owned2, createDir);
             var creating = new DeviceKeyStorage(createDir);
             creating.BeforeLeafMutate = () =>
             {
@@ -1816,8 +1787,10 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
         try
         {
+            // Product-owned private directory first; then sentinel file.
+            string productDir = ProductStoreFixture.CreateProductOwnedDirectory();
+            Directory.Move(productDir, tempDir);
             string unrelated = Path.Combine(tempDir, "unrelated.txt");
-            Directory.CreateDirectory(tempDir);
             File.WriteAllText(unrelated, "keep");
 
             var storage = new DeviceKeyStorage(tempDir);
@@ -1844,7 +1817,7 @@ internal static class TestNative
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     public static extern bool CreateHardLinkW(string lpFileName, string lpExistingFileName, IntPtr lpSecurityAttributes);
 
-    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
     public static extern uint SetNamedSecurityInfoW(
         string pObjectName,
         uint objectType,
@@ -1865,34 +1838,165 @@ internal static class TestNative
     [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
     public static extern bool ConvertStringSidToSidW(string stringSid, out System.IntPtr sid);
 
-    /// <summary>TEST-ONLY: grant GENERIC_ALL to an arbitrary SID for refusal proofs.</summary>
-    public static uint GrantFullControlToSid(string path, System.IntPtr sid)
+    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    public static extern bool GetSecurityDescriptorDacl(
+        System.IntPtr pSecurityDescriptor,
+        out bool present,
+        out System.IntPtr pDacl,
+        out bool defaulted);
+
+    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    public static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        string sddl,
+        uint revision,
+        out System.IntPtr sd,
+        out uint sdSize);
+
+    public const uint ProtectedDaclSecurityInformation = 0x80000000;
+    public const uint DaclSecurityInformation = 0x00000004;
+
+    /// <summary>
+    /// TEST-ONLY: apply a protected DACL from SDDL (no hand-coded EXPLICIT_ACCESS
+    /// offsets). Preserves owner rights so the product store can inspect the
+    /// object after the foreign grant.
+    /// </summary>
+    public static uint GrantAclViaSddl(string path, string daclSddl)
     {
-        var entry = System.Runtime.InteropServices.Marshal.AllocHGlobal(56);
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                "D:P" + daclSddl,
+                1,
+                out var sd,
+                out _))
+        {
+            return unchecked((uint)System.Runtime.InteropServices.Marshal.GetLastWin32Error());
+        }
+
         try
         {
-            for (int i = 0; i < 56; i++) System.Runtime.InteropServices.Marshal.WriteByte(entry, i, 0);
-            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 0, unchecked((int)0x10000000));
-            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 4, 0);
-            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 8, 0);
-            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 24, 1);
-            System.Runtime.InteropServices.Marshal.WriteInt32(entry, 28, 1);
-            System.Runtime.InteropServices.Marshal.WriteIntPtr(entry, 32, sid);
-            var status = SetEntriesInAclW(1, entry, System.IntPtr.Zero, out var newAcl);
-            if (status != 0u) return status;
-            try
+            if (!GetSecurityDescriptorDacl(sd, out bool present, out var pDacl, out _)
+                || !present
+                || pDacl == System.IntPtr.Zero)
             {
-                return SetNamedSecurityInfoW(path, 1, 4, System.IntPtr.Zero, System.IntPtr.Zero, newAcl, System.IntPtr.Zero);
+                return 87; // ERROR_INVALID_PARAMETER
             }
-            finally
-            {
-                Helicoid.WindowsPlatform.Native.Kernel32Native.LocalFree(newAcl);
-            }
+
+            return SetNamedSecurityInfoW(
+                path,
+                1 /*SE_FILE_OBJECT*/,
+                DaclSecurityInformation | ProtectedDaclSecurityInformation,
+                System.IntPtr.Zero,
+                System.IntPtr.Zero,
+                pDacl,
+                System.IntPtr.Zero);
         }
         finally
         {
-            System.Runtime.InteropServices.Marshal.FreeHGlobal(entry);
+            Helicoid.WindowsPlatform.Native.Kernel32Native.LocalFree(sd);
         }
+    }
+
+    /// <summary>TEST-ONLY: grant full control to an SID while keeping owner rights.</summary>
+    public static uint GrantFullControlToSid(string path, string sidString)
+    {
+        // Owner/current-user ACE plus the foreign grant so the store can still open.
+        string userSid = CurrentUserSidString() ?? throw new InvalidOperationException("no user sid");
+        return GrantAclViaSddl(path, "(A;;FA;;;" + userSid + ")(A;;FA;;;" + sidString + ")");
+    }
+
+    public static string? CurrentUserSidString()
+    {
+        var process = Helicoid.WindowsPlatform.Native.Kernel32Native.GetCurrentProcess();
+        if (!Helicoid.WindowsPlatform.Native.FileSecurityNative.OpenProcessToken(
+                process,
+                Helicoid.WindowsPlatform.Native.FileSecurityNative.TokenQuery,
+                out var token))
+        {
+            return null;
+        }
+
+        using (token)
+        {
+            if (!Helicoid.WindowsPlatform.Native.FileSecurityNative.GetTokenInformation(
+                    token.DangerousGetHandle(),
+                    Helicoid.WindowsPlatform.Native.FileSecurityNative.TokenUser,
+                    System.IntPtr.Zero,
+                    0,
+                    out int needed)
+                || needed <= 0)
+            {
+                // Expected ERROR_INSUFFICIENT_BUFFER probe; retry below if needed>0.
+            }
+
+            if (needed <= 0)
+            {
+                needed = 256;
+            }
+
+            var buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal(needed);
+            try
+            {
+                if (!Helicoid.WindowsPlatform.Native.FileSecurityNative.GetTokenInformation(
+                        token.DangerousGetHandle(),
+                        Helicoid.WindowsPlatform.Native.FileSecurityNative.TokenUser,
+                        buffer,
+                        needed,
+                        out _))
+                {
+                    return null;
+                }
+
+                var pSid = System.Runtime.InteropServices.Marshal.ReadIntPtr(buffer);
+                if (!ConvertSidToStringSidW(pSid, out var pString))
+                {
+                    return null;
+                }
+
+                try
+                {
+                    return System.Runtime.InteropServices.Marshal.PtrToStringUni(pString);
+                }
+                finally
+                {
+                    Helicoid.WindowsPlatform.Native.Kernel32Native.LocalFree(pString);
+                }
+            }
+            finally
+            {
+                System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer);
+            }
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    public static extern bool ConvertSidToStringSidW(System.IntPtr pSid, out System.IntPtr stringSid);
+}
+
+/// <summary>
+/// TEST-ONLY: establish a product-owned private directory via the actual store
+/// create/forget path (never a generic inherited Directory.CreateDirectory).
+/// </summary>
+internal static class ProductStoreFixture
+{
+    public static string CreateProductOwnedDirectory()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        var storage = new Helicoid.WindowsPlatform.DeviceKeyStorage(dir);
+        var created = storage.CreateNew(out _, out _);
+        if (created != Helicoid.WindowsPlatform.DeviceKeyStorageResult.Success)
+        {
+            throw new InvalidOperationException("fixture CreateNew failed: " + created);
+        }
+
+        var forgotten = storage.Forget();
+        if (forgotten != Helicoid.WindowsPlatform.DeviceKeyStorageResult.Forgotten)
+        {
+            throw new InvalidOperationException("fixture Forget failed: " + forgotten);
+        }
+
+        return dir;
     }
 }
 

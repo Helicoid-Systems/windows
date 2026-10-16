@@ -1,3 +1,17 @@
+## Native Windows CI fixture correction, 16 October 2026
+
+Run `38923866275` built the real Manager and Computer applications and passed
+429 domain tests, but native integration failed **5 of 63 tests**. Three setup
+fixtures incorrectly trusted generic inherited folders; two ACL mutation fixtures
+used invalid native layouts. The refusal boundary remains strict. Fixtures now
+use actual product-owned directories and Unicode SDDL APIs, retain owner rights
+when granting foreign access, and explicitly create the untrusted-directory ACL.
+The existing private create/sign/reopen regression is retained.
+
+Coordinator native-test compilation with `-warnaserror` passes. A fresh Windows
+CI run is required; the prior failure is not relabeled as acceptance. No product
+store, admission or UI behavior was weakened by this fixture-only correction.
+
 ## Coordinator native-auth candidate, 16 October 2026
 
 Coordinator independently reran the complete domain suite: **429 passed, zero
@@ -485,3 +499,12 @@ to the same unaccepted status until review closes.
 - Ancestors pinned before mutation; deterministic parent-replacement pin seam.
 - Domain **429 passed**; WindowsPlatform/IntegrationTests compile `-warnaserror`;
   `actionlint` clean. Native Windows runtime remains **Not Verified** pending CI.
+
+
+### Native CI 38923866275 fixture/ACL repair (16 October, uncommitted)
+
+Five WindowsFact failures: three OwnershipMismatch from generic inherited
+fixture directories, two ERROR_INVALID_PARAMETER 87 from hand-coded
+EXPLICIT_ACCESS offsets. Fixtures now use actual store create/forget for
+product-owned private dirs; ACL grants use SDDL with owner retained.
+Domain **429 passed**. Native suite requires Windows CI rerun — **Not Verified**.
