@@ -13,12 +13,16 @@ public enum ConnectionUiState
     SignedIn = 3,
     Refused = 4,
     Failed = 5,
+
+    /// <summary>Device-key challenge pending a six-digit TOTP code.</summary>
+    AwaitingTotp = 6,
 }
 
 /// <summary>
 /// Sign-in and session state for the manager. Development loopback access is
 /// available only when the process was started with an explicit development
-/// server option. Default remains the closed production client.
+/// server option. Production device-key challenge sign-in requires real
+/// supplied authority trust; when absent the UI stays explicitly closed.
 /// </summary>
 public sealed class ConnectionViewModel : INotifyPropertyChanged
 {
@@ -28,17 +32,29 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
     private string _username = string.Empty;
     private string _managerIdentity = string.Empty;
     private bool _isDevelopmentEnabled;
+    private bool _requiresTotp;
 
-    public ConnectionViewModel(DevelopmentLaunchOptions launchOptions, IHsServerClient client)
+    public ConnectionViewModel(
+        DevelopmentLaunchOptions launchOptions,
+        IHsServerClient client,
+        V2SignInCoordinator? deviceKeySignIn = null)
     {
         ArgumentNullException.ThrowIfNull(launchOptions);
         ArgumentNullException.ThrowIfNull(client);
         LaunchOptions = launchOptions;
         Client = client;
+        DeviceKeySignIn = deviceKeySignIn;
         _isDevelopmentEnabled = launchOptions.DevelopmentServerEnabled;
         _managerIdentity = launchOptions.DevelopmentManagerIdentity ?? string.Empty;
 
-        if (!launchOptions.DevelopmentServerEnabled)
+        if (deviceKeySignIn is not null)
+        {
+            _state = ConnectionUiState.ReadyForDevelopmentSignin;
+            _statusMessage = deviceKeySignIn.StatusMessage;
+            _detailMessage = deviceKeySignIn.DetailMessage;
+            deviceKeySignIn.PropertyChanged += OnDeviceKeySignInChanged;
+        }
+        else if (!launchOptions.DevelopmentServerEnabled)
         {
             _state = ConnectionUiState.ProductionClosed;
             _statusMessage = "Server sign-in is not available in this build.";
@@ -56,19 +72,57 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
 
     public IHsServerClient Client { get; }
 
+    /// <summary>
+    /// Production device-key challenge sign-in. Null when authority trust is
+    /// not configured for this process.
+    /// </summary>
+    public V2SignInCoordinator? DeviceKeySignIn { get; }
+
     public bool IsDevelopmentEnabled
     {
         get => _isDevelopmentEnabled;
         private set { _isDevelopmentEnabled = value; OnPropertyChanged(); OnPropertyChanged(nameof(CanSignIn)); }
     }
 
-    public bool CanSignIn => IsDevelopmentEnabled
-        && _state is not (ConnectionUiState.SigningIn or ConnectionUiState.SignedIn);
+    /// <summary>True when a six-digit TOTP code must be collected.</summary>
+    public bool RequiresTotp
+    {
+        get => _requiresTotp;
+        private set
+        {
+            _requiresTotp = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(CanSignIn));
+        }
+    }
+
+    public bool CanSignIn
+    {
+        get
+        {
+            if (DeviceKeySignIn is not null)
+            {
+                return DeviceKeySignIn.CanStart || DeviceKeySignIn.CanCompleteTotp;
+            }
+
+            return IsDevelopmentEnabled
+                && _state is not (ConnectionUiState.SigningIn or ConnectionUiState.SignedIn);
+        }
+    }
 
     public string Username
     {
         get => _username;
-        set { _username = value; OnPropertyChanged(); }
+        set
+        {
+            _username = value;
+            if (DeviceKeySignIn is not null)
+            {
+                DeviceKeySignIn.Username = value;
+            }
+
+            OnPropertyChanged();
+        }
     }
 
     /// <summary>
@@ -112,6 +166,12 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
 
     public async Task SignInAsync(string password, CancellationToken cancellationToken)
     {
+        if (DeviceKeySignIn is not null)
+        {
+            await DeviceKeySignIn.SignInAsync(password, cancellationToken).ConfigureAwait(true);
+            return;
+        }
+
         if (!IsDevelopmentEnabled)
         {
             State = ConnectionUiState.Refused;
@@ -150,6 +210,22 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>Submit a six-digit TOTP code for a pending device-key challenge.</summary>
+    public async Task SubmitTotpAsync(string? totpCode, CancellationToken cancellationToken)
+    {
+        if (DeviceKeySignIn is null)
+        {
+            return;
+        }
+
+        await DeviceKeySignIn.CompleteWithTotpAsync(totpCode, cancellationToken).ConfigureAwait(true);
+    }
+
+    public void CancelSignIn()
+    {
+        DeviceKeySignIn?.Cancel();
+    }
+
     public async Task RefreshInventoryAsync(
         Action<IReadOnlyList<ComputerRecord>> apply,
         CancellationToken cancellationToken)
@@ -168,6 +244,12 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
 
     public async Task SignOutAsync(CancellationToken cancellationToken)
     {
+        if (DeviceKeySignIn is not null)
+        {
+            DeviceKeySignIn.SignOut();
+            return;
+        }
+
         try
         {
             await Client.LogoutAsync(cancellationToken).ConfigureAwait(true);
@@ -187,6 +269,48 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
             ? "Signed out."
             : "Server sign-in is not available in this build.";
         DetailMessage = string.Empty;
+    }
+
+    private void OnDeviceKeySignInChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (DeviceKeySignIn is null)
+        {
+            return;
+        }
+
+        switch (e.PropertyName)
+        {
+            case nameof(V2SignInCoordinator.Phase):
+                State = DeviceKeySignIn.Phase switch
+                {
+                    V2SignInPhase.Unavailable => ConnectionUiState.ProductionClosed,
+                    V2SignInPhase.Ready => ConnectionUiState.ReadyForDevelopmentSignin,
+                    V2SignInPhase.StartingChallenge => ConnectionUiState.SigningIn,
+                    V2SignInPhase.AwaitingTotp => ConnectionUiState.AwaitingTotp,
+                    V2SignInPhase.Completing => ConnectionUiState.SigningIn,
+                    V2SignInPhase.SignedIn => ConnectionUiState.SignedIn,
+                    V2SignInPhase.Refused => ConnectionUiState.Refused,
+                    V2SignInPhase.Failed => ConnectionUiState.Failed,
+                    _ => ConnectionUiState.Failed,
+                };
+                SignedInAccountName = DeviceKeySignIn.SignedInAccountName;
+                ManagerLifecycleState = DeviceKeySignIn.ManagerLifecycleState;
+                RequiresTotp = DeviceKeySignIn.RequiresTotp;
+                break;
+            case nameof(V2SignInCoordinator.RequiresTotp):
+                RequiresTotp = DeviceKeySignIn.RequiresTotp;
+                break;
+            case nameof(V2SignInCoordinator.StatusMessage):
+                StatusMessage = DeviceKeySignIn.StatusMessage;
+                break;
+            case nameof(V2SignInCoordinator.DetailMessage):
+                DetailMessage = DeviceKeySignIn.DetailMessage;
+                break;
+            case nameof(V2SignInCoordinator.CanStart):
+            case nameof(V2SignInCoordinator.CanCompleteTotp):
+                OnPropertyChanged(nameof(CanSignIn));
+                break;
+        }
     }
 
     private void ApplyFailure(ServerClientException ex)

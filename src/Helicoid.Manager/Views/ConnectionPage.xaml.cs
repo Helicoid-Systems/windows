@@ -21,6 +21,7 @@ public sealed partial class ConnectionPage : Page
         {
             _viewModel = vm;
             ManagerIdentityBox.Text = vm.ManagerIdentity;
+            vm.PropertyChanged += (_, _) => Refresh();
             Refresh();
         }
     }
@@ -32,12 +33,22 @@ public sealed partial class ConnectionPage : Page
             return;
         }
 
-        var enabled = _viewModel.IsDevelopmentEnabled;
-        UsernameBox.IsEnabled = enabled && _viewModel.CanSignIn;
-        PasswordBox.IsEnabled = enabled && _viewModel.CanSignIn;
-        ManagerIdentityBox.IsEnabled = enabled && _viewModel.CanSignIn;
-        SignInButton.IsEnabled = _viewModel.CanSignIn;
-        SignOutButton.IsEnabled = enabled && _viewModel.State == ConnectionUiState.SignedIn;
+        var deviceKey = _viewModel.DeviceKeySignIn is not null;
+        var awaitingTotp = _viewModel.RequiresTotp
+            && _viewModel.State == ConnectionUiState.AwaitingTotp;
+
+        UsernameBox.IsEnabled = _viewModel.CanSignIn && !awaitingTotp;
+        PasswordBox.IsEnabled = _viewModel.CanSignIn && !awaitingTotp;
+        ManagerIdentityBox.IsEnabled = _viewModel.IsDevelopmentEnabled && _viewModel.CanSignIn && !awaitingTotp;
+        SignInButton.IsEnabled = _viewModel.CanSignIn && !awaitingTotp;
+        CancelButton.IsEnabled = deviceKey
+            && _viewModel.State is ConnectionUiState.SigningIn
+                or ConnectionUiState.AwaitingTotp;
+        SignOutButton.IsEnabled = _viewModel.State == ConnectionUiState.SignedIn;
+
+        TotpPanel.Visibility = awaitingTotp ? Visibility.Visible : Visibility.Collapsed;
+        TotpBox.IsEnabled = awaitingTotp;
+        SubmitTotpButton.IsEnabled = awaitingTotp;
 
         ModeInfo.Message = _viewModel.StatusMessage;
         ModeInfo.Severity = _viewModel.State switch
@@ -46,13 +57,16 @@ public sealed partial class ConnectionPage : Page
             ConnectionUiState.Refused => InfoBarSeverity.Error,
             ConnectionUiState.Failed => InfoBarSeverity.Warning,
             ConnectionUiState.SignedIn => InfoBarSeverity.Success,
+            ConnectionUiState.AwaitingTotp => InfoBarSeverity.Warning,
             _ => InfoBarSeverity.Informational,
         };
         ModeInfo.Title = _viewModel.State switch
         {
             ConnectionUiState.ProductionClosed => "Not available",
+            ConnectionUiState.ReadyForDevelopmentSignin when deviceKey => "Device-key sign-in",
             ConnectionUiState.ReadyForDevelopmentSignin => "Development server",
             ConnectionUiState.SigningIn => "Signing in",
+            ConnectionUiState.AwaitingTotp => "Authentication code required",
             ConnectionUiState.SignedIn => "Signed in",
             ConnectionUiState.Refused => "Access refused",
             ConnectionUiState.Failed => "Connection problem",
@@ -92,6 +106,27 @@ public sealed partial class ConnectionPage : Page
         Refresh();
     }
 
+    private async void SubmitTotp_Click(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        var code = TotpBox.Password;
+        TotpBox.Password = string.Empty;
+        await _viewModel.SubmitTotpAsync(code, CancellationToken.None);
+        Refresh();
+    }
+
+    private void Cancel_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel?.CancelSignIn();
+        PasswordBox.Password = string.Empty;
+        TotpBox.Password = string.Empty;
+        Refresh();
+    }
+
     private async void SignOut_Click(object sender, RoutedEventArgs e)
     {
         if (_viewModel is null)
@@ -100,6 +135,8 @@ public sealed partial class ConnectionPage : Page
         }
 
         await _viewModel.SignOutAsync(CancellationToken.None);
+        PasswordBox.Password = string.Empty;
+        TotpBox.Password = string.Empty;
         Refresh();
     }
 }

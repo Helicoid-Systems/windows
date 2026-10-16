@@ -12,4 +12,18 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!--
+      NSec.Cryptography 26.4.0 (MIT, libsodium-based, nuget.org, published
+      2026-04-30) supplies the real Ed25519 implementation used for device-key
+      challenge proofs. There is no BCL Ed25519 signing API; this is the
+      smallest maintained dependency that provides one.
+    -->
+    <PackageReference Include="NSec.Cryptography" Version="26.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Helicoid.Domain.Tests" />
+  </ItemGroup>
+
 </Project>

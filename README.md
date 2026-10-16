@@ -1,5 +1,12 @@
 # Helicoid Windows apps
 
+Uncommitted candidate: native pinned-HTTPS v2 device-key challenge sign-in
+(contract rev2 completion-key binding) with conditional TOTP UI and DPAPI
+device-key storage. Not accepted pending coordinator review and a native
+Windows CI run. Portable domain tests and compilation are proved on this
+host; WinUI build, DPAPI/Win32 ownership-race, and live UI evidence remain
+Windows-CI gates. Media/control/hosting feature flags stay closed.
+
 Native Windows 11 x64 sources for **Helicoid Manager** (operator console) and **Helicoid Computer** (monitored-computer status), plus a platform-independent domain and development server client.
 
 Product identity: Helicoid, from Helicoid Systems. Durable package and service identifiers remain pending a product decision.
