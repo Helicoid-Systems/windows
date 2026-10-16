@@ -1506,8 +1506,9 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
     public void DeviceKeyStorage_SymlinkLeaf_IsRefused()
     {
         if (!OperatingSystem.IsWindows()) return;
-        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempDir);
+        // Product-owned private directory so parent verification succeeds and
+        // the leaf symlink is what must be refused.
+        string tempDir = ProductStoreFixture.CreateProductOwnedDirectory();
         string target = Path.Combine(tempDir, "target.bin");
         File.WriteAllBytes(target, new byte[] { 1, 2, 3 });
         string link = Path.Combine(tempDir, "device-identity.bin");
@@ -1803,6 +1804,101 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         finally
         {
             try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_ProductDirectoryForeignAce_OpenIsRefused_PreservesKeyBytes()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+            byte[] keyBytes = File.ReadAllBytes(storage.StoragePath);
+            Assert.NotEmpty(keyBytes);
+
+            // Foreign ACE on the product directory only; keyfile ACL untouched.
+            // Network Service (S-1-5-20) is a real foreign principal; no account.
+            Assert.Equal(0u, TestNative.GrantFullControlToSid(tempDir, "S-1-5-20"));
+
+            var reopened = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.OwnershipMismatch, reopened.Open(out var seed, out var pub));
+            Assert.Empty(seed);
+            Assert.Empty(pub);
+
+            // Must not have read/removed the original key file.
+            Assert.True(File.Exists(storage.StoragePath));
+            Assert.Equal(keyBytes, File.ReadAllBytes(storage.StoragePath));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_ProductDirectoryForeignAce_ForgetIsRefused_PreservesKeyBytes()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        try
+        {
+            var storage = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+            byte[] keyBytes = File.ReadAllBytes(storage.StoragePath);
+            Assert.NotEmpty(keyBytes);
+
+            // Foreign ACE on the product directory only; keyfile ACL untouched.
+            Assert.Equal(0u, TestNative.GrantFullControlToSid(tempDir, "S-1-5-20"));
+
+            var reopened = new DeviceKeyStorage(tempDir);
+            Assert.Equal(DeviceKeyStorageResult.OwnershipMismatch, reopened.Forget());
+
+            // Must not have deleted the original key file; bytes preserved.
+            Assert.True(File.Exists(storage.StoragePath));
+            Assert.Equal(keyBytes, File.ReadAllBytes(storage.StoragePath));
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+    }
+
+    [WindowsFact]
+    public void DeviceKeyStorage_FailedChain_IsReleased_ParentRenameAndRemovalSucceed()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"helicoid-devkey-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string productDir = Path.Combine(root, "product");
+        try
+        {
+            string owned = ProductStoreFixture.CreateProductOwnedDirectory();
+            Directory.Move(owned, productDir);
+
+            var storage = new DeviceKeyStorage(productDir);
+            Assert.Equal(DeviceKeyStorageResult.Success, storage.CreateNew(out _, out _));
+            byte[] keyBytes = File.ReadAllBytes(storage.StoragePath);
+
+            Assert.Equal(0u, TestNative.GrantFullControlToSid(productDir, "S-1-5-20"));
+
+            var reopened = new DeviceKeyStorage(productDir);
+            Assert.Equal(DeviceKeyStorageResult.OwnershipMismatch, reopened.Open(out _, out _));
+            Assert.Equal(DeviceKeyStorageResult.OwnershipMismatch, reopened.Forget());
+
+            // Denied Open/Forget must not leave NoShareDelete pins behind:
+            // the product directory renames and the tree removes cleanly.
+            string moved = Path.Combine(root, "product-moved");
+            Directory.Move(productDir, moved);
+            string movedKey = Path.Combine(moved, "device-identity.bin");
+            Assert.True(File.Exists(movedKey));
+            Assert.Equal(keyBytes, File.ReadAllBytes(movedKey));
+            File.Delete(movedKey);
+            Directory.Delete(moved);
+            Assert.False(Directory.Exists(productDir));
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); } catch { }
         }
     }
 }

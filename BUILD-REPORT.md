@@ -1,3 +1,36 @@
+## Windows parent-handle access repair (pending native rerun), 16 October 2026
+
+Actual second native CI [38925659773](https://github.com/Helicoid-Systems/windows/actions/runs/38925659773)
+at `1af404c` failed **1 of 64** WindowsFact cases: only
+`DeviceKeyStorage_ParentReplacement_WhileHeld_IsRefused` (expected Success from
+`TryPinDirectory`, got `OwnershipMismatch`). The other **63 native cases
+passed**; both WinUI apps and domain builds passed. That single native failure
+is **pending coordinator Windows CI rerun** — not accepted, not relabeled.
+
+Root cause: `TryPinDirectory` → `OpenAncestorChain(includeLeaf: true)` opened
+the verified leaf without `READ_CONTROL`, so leaf `GetSecurityInfo`
+owner/DACL verification failed closed as `OwnershipMismatch`. Leaf open rights
+now include `READ_CONTROL`; share mode still omits `FILE_SHARE_DELETE`.
+Owner/DACL checks are not skipped and the failing test is not weakened.
+
+Also required and applied (product-private parent contract on read/removal):
+- Production `Open`/`Forget` now pin+verify the product directory
+  (current-user owner / private ACL) before the leaf, with ancestors held.
+- Denied `Open`/`Forget` refuse without reading/deleting the key file; key
+  bytes preserved (SDDL fixture, no account creation).
+- `OpenAncestorChain` failure exits dispose the acquired chain (common owner
+  finally); no stale handles block parent cleanup. Regression proves rename
+  and removal succeed after denial.
+
+Portable acceptance this host (macOS): domain **429 passed, 0 failed**;
+`Helicoid.Domain`, `Helicoid.WindowsPlatform`, and
+`Helicoid.WindowsIntegrationTests` compile with `-warnaserror` (0 w / 0 e).
+Native Windows execution is **Not Verified** here; no native pass is claimed
+from Mac. Private CreateSignReopen, explicit untrusted DACL fixture,
+synchronized real-create barrier, and all prior cases retained. Symlink-leaf
+fixture now uses a product-owned directory so parent verification cannot mask
+the leaf `ReparsePointRefused` assertion.
+
 ## Native Windows CI fixture correction, 16 October 2026
 
 Run `38923866275` built the real Manager and Computer applications and passed

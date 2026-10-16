@@ -339,23 +339,23 @@ public sealed class DeviceKeyStorage : IDisposable
             return DeviceKeyStorageResult.NotFound;
         }
 
-        // Pin ancestors first: refuse intermediate junctions/reparse parents.
-        var ancestors = OpenAncestorChain(
-            Path.GetFullPath(_storagePath),
-            includeLeaf: false,
-            leafIsDirectory: true);
-        if (ancestors.Result != DeviceKeyStorageResult.Success)
+        // Pin ancestors and verify the product directory (owner/private ACL)
+        // before the leaf read; ancestors stay held across OpenLeaf.
+        var dirCheck = OpenVerifiedOwnedDirectory();
+        if (dirCheck.Result != DeviceKeyStorageResult.Success)
         {
-            return ancestors.Result;
+            DisposeHeld(dirCheck.Ancestors);
+            return dirCheck.Result;
         }
 
+        using var productDir = dirCheck.Handle!;
         try
         {
-            return OpenLeaf(ref seed, ref publicKey, ancestors.Held);
+            return OpenLeaf(ref seed, ref publicKey, dirCheck.Ancestors);
         }
         finally
         {
-            DisposeHeld(ancestors.Held);
+            DisposeHeld(dirCheck.Ancestors);
         }
     }
 
@@ -494,22 +494,23 @@ public sealed class DeviceKeyStorage : IDisposable
             return DeviceKeyStorageResult.NotFound;
         }
 
-        var ancestors = OpenAncestorChain(
-            Path.GetFullPath(_storagePath),
-            includeLeaf: false,
-            leafIsDirectory: true);
-        if (ancestors.Result != DeviceKeyStorageResult.Success)
+        // Product-private parent contract applies to removal: pin+verify the
+        // product directory before leaf disposition; ancestors stay held.
+        var dirCheck = OpenVerifiedOwnedDirectory();
+        if (dirCheck.Result != DeviceKeyStorageResult.Success)
         {
-            return ancestors.Result;
+            DisposeHeld(dirCheck.Ancestors);
+            return dirCheck.Result;
         }
 
+        using var productDir = dirCheck.Handle!;
         try
         {
-            return ForgetLeaf(ancestors.Held);
+            return ForgetLeaf(dirCheck.Ancestors);
         }
         finally
         {
-            DisposeHeld(ancestors.Held);
+            DisposeHeld(dirCheck.Ancestors);
         }
     }
 
@@ -751,15 +752,49 @@ public sealed class DeviceKeyStorage : IDisposable
     }
 
     /// <summary>
+    /// Pin ancestors (junctions refused) and open the existing product
+    /// directory with owner/DACL verification. Does not create or re-ACL.
+    /// Used by Open/Forget so the product-private parent contract applies to
+    /// reads and removals, not only create. Ancestors stay held for the caller.
+    /// </summary>
+    private (DeviceKeyStorageResult Result, SafeFileHandle? Handle, List<SafeFileHandle> Ancestors)
+        OpenVerifiedOwnedDirectory()
+    {
+        string fullDir = Path.GetFullPath(_storageDirectory);
+        var ancestors = OpenAncestorChain(fullDir, includeLeaf: false, leafIsDirectory: true);
+        if (ancestors.Result != DeviceKeyStorageResult.Success)
+        {
+            return (ancestors.Result, null, ancestors.Held);
+        }
+
+        var dir = OpenOwnedFile(
+            _storageDirectory,
+            FileSecurityNative.FileListDirectory | FileSecurityNative.FileReadAttributes
+                | FileSecurityNative.ReadControl | FileSecurityNative.Synchronize,
+            forDelete: false,
+            isDirectory: true);
+        if (dir.Result != DeviceKeyStorageResult.Success)
+        {
+            DisposeHeld(ancestors.Held);
+            return (dir.Result, null, new List<SafeFileHandle>());
+        }
+
+        return (DeviceKeyStorageResult.Success, dir.Handle, ancestors.Held);
+    }
+
+    /// <summary>
     /// Open and hold every intermediate path component with no-follow.
     /// Refuses any reparse point in the chain (junction/symlink parents).
     /// Ownership/DACL is strict on the product directory and leaf only;
     /// ancestors are pinned (no FILE_SHARE_DELETE) without re-ACLing them.
+    /// On any failure the chain this call acquired is disposed here (common
+    /// owner); the caller receives an empty list and never a partial hold.
     /// </summary>
     private static (DeviceKeyStorageResult Result, List<SafeFileHandle> Held)
         OpenAncestorChain(string fullPath, bool includeLeaf, bool leafIsDirectory)
     {
         var held = new List<SafeFileHandle>();
+        var transferred = false;
         try
         {
             string root = Path.GetPathRoot(fullPath) ?? string.Empty;
@@ -786,13 +821,22 @@ public sealed class DeviceKeyStorage : IDisposable
                     flags |= FileSecurityNative.FileFlagBackupSemantics;
                 }
 
+                // Owner/DACL verification needs READ_CONTROL on the opened
+                // handle. Leaf is fully owned-checked, so it must request it.
+                // Share mode still omits FILE_SHARE_DELETE (NoShareDelete).
+                uint desiredAccess = isDirectory
+                    ? FileSecurityNative.FileListDirectory | FileSecurityNative.FileReadAttributes
+                    : FileSecurityNative.FileReadData | FileSecurityNative.FileReadAttributes;
+                if (isLeaf)
+                {
+                    desiredAccess |= FileSecurityNative.ReadControl;
+                }
+
                 // Intermediate components are pinned without share-delete and
                 // must not be reparse points. Leaf is fully owned-checked.
                 var handle = FileSecurityNative.CreateFileW(
                     current,
-                    isDirectory
-                        ? FileSecurityNative.FileListDirectory | FileSecurityNative.FileReadAttributes
-                        : FileSecurityNative.FileReadData | FileSecurityNative.FileReadAttributes,
+                    desiredAccess,
                     FileSecurityNative.FileShareRead | FileSecurityNative.FileShareWrite,
                     IntPtr.Zero,
                     FileSecurityNative.OpenExisting,
@@ -836,17 +880,25 @@ public sealed class DeviceKeyStorage : IDisposable
                 held.Add(handle);
             }
 
+            transferred = true;
             return (DeviceKeyStorageResult.Success, held);
         }
         catch (IOException)
         {
-            DisposeHeld(held);
-            return (DeviceKeyStorageResult.IoError, new List<SafeFileHandle>());
+            return (DeviceKeyStorageResult.IoError, held);
         }
         catch (UnauthorizedAccessException)
         {
-            DisposeHeld(held);
-            return (DeviceKeyStorageResult.IoError, new List<SafeFileHandle>());
+            return (DeviceKeyStorageResult.IoError, held);
+        }
+        finally
+        {
+            // Common owner: never leak a partial chain on failure exits.
+            if (!transferred)
+            {
+                DisposeHeld(held);
+                held.Clear();
+            }
         }
     }
 
