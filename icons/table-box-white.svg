@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="32" viewBox="0 0 1000 32" preserveAspectRatio="none">
+  <defs>
+    <pattern id="stripes-light" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="12" stroke="#afb8c1" stroke-width="3"/>
+    </pattern>
+  </defs>
+  <rect x="0.5" y="0.5" width="999" height="31" fill="#ffffff"/>
+  <rect x="0.5" y="0.5" width="999" height="31" fill="url(#stripes-light)" stroke="#d0d7de" stroke-width="1"/>
+</svg>

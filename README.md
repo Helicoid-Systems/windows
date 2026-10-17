@@ -1,12 +1,123 @@
-# Helicoid Windows apps
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logos/hs%20logo%20white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="logos/hs%20logo%20dark.svg">
+    <img src="logos/hs%20logo%20dark.svg" width="80" alt="Helicoid Systems">
+  </picture>
+</p>
+
+<h1 align="center">Helicoid for Windows</h1>
+
+<p align="center">
+Native Windows 11 computer monitoring and remote assistance — manager console and monitored-computer status.
+</p>
+
+<br>
+
+<div align="center">
+<table width="100%">
+<thead>
+<tr>
+<td align="center" colspan="2" width="1200">
+
+### About this repo
+
+Native Windows 11 x64 sources for **Helicoid Manager** (operator console) and **Helicoid Computer** (monitored-computer status), plus a platform-independent domain and development server client. WinUI 3 apps on the Windows App SDK, from Helicoid Systems. Durable package and service identifiers remain pending a product decision.
+
+<br>
+
+</td>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="center" colspan="2" width="1200">
+
+### Our Purpose
+
+Computers first: inclusion, preview grid, and selected-or-displayed actions, with honest empty, offline, and engine-unavailable states. No default fake computers — sample data is behind an explicit development fixture toggle, labeled as sample data. Capture, input forwarding, and server installation stay out of this build.
+
+<br>
+
+</td>
+</tr>
+</tbody>
+</table>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="icons/stripes.svg">
+  <source media="(prefers-color-scheme: light)" srcset="icons/stripes-white.svg">
+  <img src="icons/stripes.svg" width="100%" height="32" align="absbottom" alt="">
+</picture>
+<p></p>
+<table width="100%">
+<tbody>
+<tr>
+<td align="center" width="1200">
+
+### <picture><source media="(prefers-color-scheme: dark)" srcset="icons/windows-white.svg"><img src="icons/windows-dark.svg" height="24" align="absmiddle" alt=""></picture> Helicoid Manager
+
+Operator console: Connection, Computers inventory with grid/list/search, inclusion panel, and Server Setup. Overview state keeps inclusion, displayed IDs, selection, action snapshots, and admitted streams separate.
+
+```
+dotnet build Helicoid.Windows.slnx -c Release
+```
+
+<a href="src/Helicoid.Manager">Manager sources</a>
+<br><br>
+
+</td>
+<td align="center" width="50%">
+
+### <picture><source media="(prefers-color-scheme: dark)" srcset="icons/windows-white.svg"><img src="icons/windows-dark.svg" height="24" align="absmiddle" alt=""></picture> Helicoid Computer
+
+Monitored-computer status: honest operator status with no user Stop Control command. Window icon and taskbar identity come from the role-specific Windows icon.
+
+<a href="src/Helicoid.Computer">Computer sources</a>
+<br><br>
+
+</td>
+</tr>
+<tr>
+<td align="center" width="50%">
+
+### <picture><source media="(prefers-color-scheme: dark)" srcset="icons/flask-white.svg"><img src="icons/flask-dark.svg" height="24" align="absmiddle" alt=""></picture> Domain and tests
+
+Portable domain model, overview state, setup wizard, agent status, and loopback development HTTP client. xUnit suite runs on any OS with the .NET 10 SDK.
+
+```
+dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
+```
+
+<a href="src/Helicoid.Domain">Domain sources</a>
+<br><br>
+
+</td>
+<td align="center" width="50%">
+
+### <picture><source media="(prefers-color-scheme: dark)" srcset="icons/flask-white.svg"><img src="icons/flask-dark.svg" height="24" align="absmiddle" alt=""></picture> Development server
+
+Loopback-only development client for trying the UI against `modules/server`. Remote hosts are refused before any request; tokens stay in memory only.
+
+```
+.\Helicoid.Manager.exe --development-server --development-manager-identity my-dev-manager
+```
+
+<a href="#development-server-mode">Development rules</a>
+<br><br>
+
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+## Status
 
 Native pinned-HTTPS v2 device-key challenge sign-in (contract rev2 completion-key
 binding), conditional TOTP UI, DPAPI device-key storage and automatic session
 expiry pass coordinator checks and native Windows CI at `93f14f9`. CI runs on
 Windows Server 2025; installed Windows 11 and live UI acceptance remain
 Not Verified. Media/control/hosting feature flags stay closed.
-
-Native Windows 11 x64 sources for **Helicoid Manager** (operator console) and **Helicoid Computer** (monitored-computer status), plus a platform-independent domain and development server client.
 
 Product identity: Helicoid, from Helicoid Systems. Durable package and service identifiers remain pending a product decision.
 
@@ -121,6 +232,10 @@ Does not:
 - Build or run the WinUI apps on macOS (see `BUILD-REPORT.md`).
 - Capture screens, forward input, or install servers.
 - Produce production identity or authentication grants. The separately constructed pinned HTTPS transport is implemented, but production sign-in and trust adoption are not wired into the applications.
+
+## Wireframe assets
+
+Header, section, and product-grid styling follows the templates repo wireframe: centered `picture` logo with dark/light `srcset`, full-width `About` / `Purpose` tables, `icons/stripes.svg` separator, and the 2x2 product table with `icons/windows-*.svg` and `icons/flask-*.svg` headings. `icons/` and `logos/` here are verbatim copies from `Helicoid-Systems/templates` so the above `srcset` paths resolve.
 
 ## Package pins (checked on nuget.org, 10 October 2026)
 
