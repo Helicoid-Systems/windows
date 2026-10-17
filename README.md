@@ -1,11 +1,10 @@
 # Helicoid Windows apps
 
-Feature-branch candidate: native pinned-HTTPS v2 device-key challenge sign-in
-(contract rev2 completion-key binding) with conditional TOTP UI and DPAPI
-device-key storage. Not accepted pending coordinator review and a native
-Windows CI run. Portable domain tests and compilation are proved on this
-host; WinUI build, DPAPI/Win32 ownership-race, and live UI evidence remain
-Windows-CI gates. Media/control/hosting feature flags stay closed.
+Native pinned-HTTPS v2 device-key challenge sign-in (contract rev2 completion-key
+binding), conditional TOTP UI, DPAPI device-key storage and automatic session
+expiry pass coordinator checks and native Windows CI at `93f14f9`. CI runs on
+Windows Server 2025; installed Windows 11 and live UI acceptance remain
+Not Verified. Media/control/hosting feature flags stay closed.
 
 Native Windows 11 x64 sources for **Helicoid Manager** (operator console) and **Helicoid Computer** (monitored-computer status), plus a platform-independent domain and development server client.
 
@@ -37,7 +36,7 @@ Runs on any OS with the .NET 10 SDK:
 dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
 ```
 
-Last portable run (macOS, 17 October 2026, callback-crossing expiry notification): **458 passed, 0 failed, 0 skipped**, including **13/13** independent CoordinatorReview cases (stale authorized body fencing, high-frequency rearm, queued UI inventory preserve, delayed-timer dispatch, expiry-between-callback-checks). Native Windows acceptance previously passed at `57bea57` in [CI38931046294](https://github.com/Helicoid-Systems/windows/actions/runs/38931046294): 429 domain tests and 67 native integration tests (historical count before this package; a new CI run is still required). New CI and installed Windows 11 acceptance remain unverified.
+Last portable run (macOS, 17 October 2026, callback-crossing expiry notification): **458 passed, 0 failed, 0 skipped**, including **13/13** independent CoordinatorReview cases (stale authorized body fencing, high-frequency rearm, queued UI inventory preserve, delayed-timer dispatch, expiry-between-callback-checks). [Native CI39018316028](https://github.com/Helicoid-Systems/windows/actions/runs/39018316028) at `93f14f9373d23bcef839a8117bbb658ae97e6259` passes **458 domain / 67 native integration tests** and both WinUI release builds on Windows Server 2025. Installed Windows 11 acceptance remains Not Verified.
 
 ### Worker / supervisor integration tests
 
@@ -74,9 +73,9 @@ runs worker IPC admission checks (missing/malformed fencing env → exit 1).
 
 | Claim | Status |
 | --- | --- |
-| Domain and real HTTPS transport suite | **Verified on macOS and Windows Server 2025 CI** (429 tests at `57bea57`) |
+| Domain and real HTTPS transport suite | **Verified on macOS and Windows Server 2025 CI** (458 tests at `93f14f9`) |
 | Portable integration facts | **Verified locally** (10 tests) |
-| Windows-native IPC / supervisor / Job Object paths | **Verified at `57bea57`** (67 tests on Windows Server 2025 CI) |
+| Windows-native IPC / supervisor / Job Object paths | **Verified at `93f14f9`** (67 tests on Windows Server 2025 CI) |
 | Capture / input / network | **Closed** — no admitted ABI yet |
 
 ## Development server mode

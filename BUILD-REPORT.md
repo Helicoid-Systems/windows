@@ -1,3 +1,21 @@
+## Coordinator native Windows acceptance, 17 October 2026
+
+[CI39018316028](https://github.com/Helicoid-Systems/windows/actions/runs/39018316028)
+at exact source `93f14f9373d23bcef839a8117bbb658ae97e6259` passes 458 domain
+and 67 native integration tests, both WinUI release builds, launcher, icon,
+worker metadata and console-probe checks. The actual runner is Windows Server
+2025. Coordinator independently passes all 13 frozen causal expiry regressions,
+458 portable tests, warning-as-error integration compilation and real Rust HTTPS
+interop (7 Swift / 6 C# checks, owned listeners reaped).
+
+The downloaded unsigned development archive (artifact12095832540,191487356bytes)
+has SHA256 `26653b0d43c4a48daa81e408f72441f3c3d674ab19923a4444d54f724ba76b10`,
+matching GitHub metadata; all1070 members pass ZIP CRC. The expected Manager,
+Computer and CaptureWorker executables have actual PE x64 headers and empty
+certificate directories (unsigned). Installed Windows11, real capture/input,
+normal enrollment and the complete worker/admission checkpoint remain Not Verified.
+The following candidate and failure entries are historical.
+
 ## Windows callback-crossing expiry acceptance candidate, 17 October 2026
 
 The coordinator independently reproduced a lost notification when the deadline
