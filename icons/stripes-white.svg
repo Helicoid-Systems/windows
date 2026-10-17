@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%">
+  <defs>
+    <pattern id="stripes-white" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="12" stroke="#afb8c1" stroke-width="3"/>
+    </pattern>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#stripes-white)"/>
+  <line x1="0" y1="0" x2="0" y2="100%" stroke="#d0d7de" stroke-width="2"/>
+  <line x1="100%" y1="0" x2="100%" y2="100%" stroke="#d0d7de" stroke-width="2"/>
+  <line x1="0" y1="0" x2="100%" y2="0" stroke="#d0d7de" stroke-width="2"/>
+  <line x1="0" y1="100%" x2="100%" y2="100%" stroke="#d0d7de" stroke-width="2"/>
+</svg>
