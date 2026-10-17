@@ -31,6 +31,20 @@ public enum V2SignInPhase
     Failed = 7,
 }
 
+/// <summary>Session identity transition. NewGeneration 0 means the identity was lost.</summary>
+public sealed class SessionIdentityChangedEventArgs : EventArgs
+{
+    public SessionIdentityChangedEventArgs(int oldGeneration, int newGeneration)
+    {
+        OldGeneration = oldGeneration;
+        NewGeneration = newGeneration;
+    }
+
+    public int OldGeneration { get; }
+
+    public int NewGeneration { get; }
+}
+
 /// <summary>
 /// Domain-level native sign-in state machine with conditional TOTP UI state.
 /// Secrets (password, TOTP, pending challenge) stay in process memory only and
@@ -43,6 +57,20 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
     private PendingAuthChallenge? _pending;
     private CancellationTokenSource? _activeCts;
     private int _activeOperation;
+
+    /// <summary>
+    /// Client session generation this coordinator last installed as SignedIn.
+    /// Stale expiry notifications for any other generation cannot reset UI.
+    /// </summary>
+    private int _installedSessionGeneration;
+
+    /// <summary>
+    /// UI epoch bumped on every state-owning transition (sign-in start,
+    /// install, cancel, sign-out, dispose, expiry reset). Queued UI dispatch
+    /// captures the epoch and drops stale invalidations.
+    /// </summary>
+    private int _uiEpoch;
+
     private V2SignInPhase _phase = V2SignInPhase.Unavailable;
     private string _statusMessage = "Server sign-in is not available in this build.";
     private string _detailMessage = "Authority trust is not configured for this process.";
@@ -68,6 +96,7 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
             _phase = V2SignInPhase.Ready;
             _statusMessage = "Device-key sign-in";
             _detailMessage = "Sign in with your account password. A second factor may be required.";
+            client.SessionExpired += OnClientSessionExpired;
         }
     }
 
@@ -130,6 +159,25 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    /// <summary>
+    /// Generation-fenced session identity transition. Raised outside locks.
+    /// UI layers must apply this at the application seam so a queued Phase
+    /// snapshot cannot hide a lost or replaced identity.
+    /// </summary>
+    public event EventHandler<SessionIdentityChangedEventArgs>? SessionIdentityChanged;
+
+    /// <summary>Installed session generation this coordinator last bound to UI, or 0.</summary>
+    public int InstalledSessionGeneration
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _installedSessionGeneration;
+            }
+        }
+    }
 
     /// <summary>
     /// Start a challenge. When the server marks MFA required (or omits the
@@ -328,14 +376,33 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
         CancelPendingOperation();
         ClearSecrets();
         _client?.ClearSession();
+        SessionIdentityChangedEventArgs? lost = null;
         if (_client is not null && !_disposed)
         {
+            lock (_gate)
+            {
+                if (_installedSessionGeneration != 0)
+                {
+                    lost = new SessionIdentityChangedEventArgs(_installedSessionGeneration, 0);
+                }
+
+                _installedSessionGeneration = 0;
+                unchecked
+                {
+                    _uiEpoch++;
+                }
+            }
+
             Phase = V2SignInPhase.Ready;
             StatusMessage = "Sign-in cancelled.";
             DetailMessage = string.Empty;
             RequiresTotp = false;
             SignedInAccountName = string.Empty;
             ManagerLifecycleState = string.Empty;
+            if (lost is not null)
+            {
+                SessionIdentityChanged?.Invoke(this, lost);
+            }
         }
     }
 
@@ -345,6 +412,21 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
         ClearSecrets();
         _client?.ClearSession();
         _client?.ClearPendingChallenge();
+        SessionIdentityChangedEventArgs? lost = null;
+        lock (_gate)
+        {
+            if (_installedSessionGeneration != 0)
+            {
+                lost = new SessionIdentityChangedEventArgs(_installedSessionGeneration, 0);
+            }
+
+            _installedSessionGeneration = 0;
+            unchecked
+            {
+                _uiEpoch++;
+            }
+        }
+
         SignedInAccountName = string.Empty;
         ManagerLifecycleState = string.Empty;
         RequiresTotp = false;
@@ -354,16 +436,23 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
             Phase = V2SignInPhase.Unavailable;
             StatusMessage = "Server sign-in is not available in this build.";
             DetailMessage = "Authority trust is not configured for this process.";
-            return;
+        }
+        else
+        {
+            Phase = V2SignInPhase.Ready;
+            StatusMessage = "Signed out.";
+            DetailMessage = string.Empty;
         }
 
-        Phase = V2SignInPhase.Ready;
-        StatusMessage = "Signed out.";
-        DetailMessage = string.Empty;
+        if (lost is not null)
+        {
+            SessionIdentityChanged?.Invoke(this, lost);
+        }
     }
 
     public void Dispose()
     {
+        V2DeviceKeyChallengeClient? client;
         lock (_gate)
         {
             if (_disposed)
@@ -372,12 +461,111 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
             }
 
             _disposed = true;
+            client = _client;
+            _client = null;
+        }
+
+        if (client is not null)
+        {
+            client.SessionExpired -= OnClientSessionExpired;
         }
 
         CancelPendingOperation();
         ClearSecrets();
-        _client?.Dispose();
-        _client = null;
+        client?.Dispose();
+    }
+
+    /// <summary>
+    /// Automatic bounded-deadline observation. Resets account, manager, TOTP,
+    /// and connection status without another user action. Never logs a bearer.
+    /// Fenced to this coordinator's installed session generation and the
+    /// currently owned operation so a delayed old notification cannot erase a
+    /// replacement sign-in, pending MFA completion, or newer UI.
+    /// </summary>
+    private void OnClientSessionExpired(object? sender, SessionExpiredEventArgs e)
+    {
+        V2DeviceKeyChallengeClient? client;
+        int epoch;
+        int lostGeneration;
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            client = _client;
+
+            // An in-flight sign-in/complete/cancel owns the UI. A stale expiry
+            // for a previous generation must not cancel it.
+            if (_activeCts is not null)
+            {
+                return;
+            }
+
+            // Only the exact generation this coordinator installed as SignedIn
+            // may invalidate that UI. SessionGeneration is 0 while a replacement
+            // is still completing, so it cannot be the fence.
+            if (_installedSessionGeneration == 0
+                || e.Generation != _installedSessionGeneration)
+            {
+                return;
+            }
+
+            // Established session loss only. Starting/AwaitingTotp/Completing
+            // are owned by the current operation (guarded above).
+            if (_phase is not V2SignInPhase.SignedIn)
+            {
+                return;
+            }
+
+            if (client is not null && client.IsSessionLive)
+            {
+                // Replacement already installed after the expired generation.
+                return;
+            }
+
+            unchecked
+            {
+                _uiEpoch++;
+            }
+
+            epoch = _uiEpoch;
+            lostGeneration = _installedSessionGeneration;
+            _installedSessionGeneration = 0;
+
+            // Atomic relative to sign-in/cancel/dispose: fields + Phase under
+            // the same gate those transitions use.
+            _pending?.Clear();
+            _pending = null;
+            _phase = V2SignInPhase.Ready;
+            _statusMessage = "Your session expired. Sign in again.";
+            _detailMessage = string.Empty;
+            _requiresTotp = false;
+            _signedInAccountName = string.Empty;
+            _managerLifecycleState = string.Empty;
+        }
+
+        // Raise notifications outside the gate (no deadlock). Skip if a newer
+        // transition took ownership while we were preparing this reset.
+        lock (_gate)
+        {
+            if (_disposed || _uiEpoch != epoch)
+            {
+                return;
+            }
+        }
+
+        SessionIdentityChanged?.Invoke(this, new SessionIdentityChangedEventArgs(lostGeneration, 0));
+        OnPropertyChanged(nameof(Phase));
+        OnPropertyChanged(nameof(CanStart));
+        OnPropertyChanged(nameof(CanCompleteTotp));
+        OnPropertyChanged(nameof(RequiresTotp));
+        OnPropertyChanged(nameof(IsSignedIn));
+        OnPropertyChanged(nameof(StatusMessage));
+        OnPropertyChanged(nameof(DetailMessage));
+        OnPropertyChanged(nameof(SignedInAccountName));
+        OnPropertyChanged(nameof(ManagerLifecycleState));
     }
 
     private async Task CompleteCoreAsync(
@@ -395,10 +583,21 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
         var login = await _client.CompleteChallengeAsync(pending, totpCode, operation.Token)
             .ConfigureAwait(true);
 
+        // Reject an already-expired completion before UI install. The client
+        // may have raced its own deadline between reception and this point.
+        if (!_client.IsSessionLive)
+        {
+            _client.ClearSessionIfBearer(login.Token);
+            throw new ServerClientException(
+                ServerClientFailure.Unauthorized,
+                "Session has expired.");
+        }
+
         // Ownership is re-checked at the actual state-install point. Cancel or
         // sign-out between client success and this continuation must not
         // install a signed-in session. Obsolete cleanup may only drop this
         // operation's own bearer — never a replacement session.
+        SessionIdentityChangedEventArgs identityChange;
         lock (_gate)
         {
             if (_disposed)
@@ -416,14 +615,32 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
                     "Sign-in was cancelled before the session could be installed.");
             }
 
+            if (!_client.IsSessionLive)
+            {
+                _client.ClearSessionIfBearer(login.Token);
+                throw new ServerClientException(
+                    ServerClientFailure.Unauthorized,
+                    "Session has expired.");
+            }
+
             _pending = null;
+            var previousGeneration = _installedSessionGeneration;
+            _installedSessionGeneration = _client.SessionGeneration;
+            unchecked
+            {
+                _uiEpoch++;
+            }
+
             SignedInAccountName = login.Account?.Username ?? Username;
             ManagerLifecycleState = login.Manager?.LifecycleState ?? "none";
             RequiresTotp = false;
             Phase = V2SignInPhase.SignedIn;
             StatusMessage = $"Signed in as {SignedInAccountName}";
             DetailMessage = DescribeManager(ManagerLifecycleState);
+            identityChange = new SessionIdentityChangedEventArgs(previousGeneration, _installedSessionGeneration);
         }
+
+        SessionIdentityChanged?.Invoke(this, identityChange);
     }
 
     private readonly record struct CoordinatorOperation(int Id, CancellationToken Token);
@@ -434,6 +651,11 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
         {
             _activeCts = cts;
             _activeOperation++;
+            unchecked
+            {
+                _uiEpoch++;
+            }
+
             return new CoordinatorOperation(_activeOperation, cts.Token);
         }
     }
@@ -550,22 +772,6 @@ public sealed class V2SignInCoordinator : INotifyPropertyChanged, IDisposable
         catch (ObjectDisposedException)
         {
             // Already completed.
-        }
-    }
-
-    private void SetActiveCts(CancellationTokenSource cts)
-    {
-        lock (_gate)
-        {
-            _activeCts = cts;
-        }
-    }
-
-    private void ClearActiveCts()
-    {
-        lock (_gate)
-        {
-            _activeCts = null;
         }
     }
 

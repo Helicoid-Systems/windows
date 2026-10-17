@@ -1,3 +1,89 @@
+## Windows callback-crossing expiry acceptance candidate, 17 October 2026
+
+The coordinator independently reproduced a lost notification when the deadline
+crossed between two early-timer checks (expected1, observed0). Expiration now
+has its own state flag, separate from returned timer ownership, and notifies
+outside the gate. The monotonic deadline sum is checked for overflow.
+Fresh independent frozen-source checks pass all13 causal regressions; the
+complete portable suite reports458 passed. The native integration project
+builds with warnings as errors (0 warnings/errors). Actual Rust HTTPS
+interoperability passes7 Swift/6 C# checks and reaps both owned listeners.
+Exported session metadata verifies Europe MiMo-V2.6-Pro/high for both the
+expiry package and final callback correction. Native Windows CI for this
+candidate, installed Windows11, capture/input and normal enrollment remain
+Not Verified or unavailable; earlier native429/67 applies only to57bea57.
+
+## Windows expiry timer disposal ownership, 17 October 2026
+
+Independent RED showed the shared authorized response fence discarded the
+`ITimer` returned by `ClearSessionLocked()`, leaving a matching deadline timer
+active after a delayed-dispatch expiry. That clear path now captures the timer
+under the gate and disposes it **outside** the lock before notification,
+matching every other clear path. `ReviewEarlyClock.ActiveTimerCount` asserts
+zero active timers in `DelayedTimerDispatchCannotPermitLateInventoryBody`.
+Portable domain **457 passed, 0 failed** (12/12 CoordinatorReview);
+`Helicoid.WindowsIntegrationTests` `-warnaserror` 0 w / 0 e; `git diff --check`
+clean. Native Windows installed acceptance not claimed. Earlier entries follow.
+
+## Windows native v2 session expiry final boundaries, 17 October 2026
+
+Two independently reproduced remaining failures are repaired: (1) authorized
+HTTP200 bodies that outlived a delayed timer dispatch were accepted because
+`IsCurrentSession` ignored the lease deadline — the shared response fence now
+re-checks the current monotonic/UTC deadline before any successful body leaves
+`SendJsonAsync` and expires only that installed generation; (2) generic
+`SessionLost` unconditionally cleared a replacement's freshly loaded inventory
+when queued A-expiry events drained — loss cleanup is generation-fenced via
+`SessionIdentityChanged`, with generic `SessionLost` scoped to legacy/no-v2.
+
+Portable acceptance this host (macOS): domain **457 passed, 0 failed**
+including **12/12 CoordinatorReview** independent cases (late-inventory
+theory, high-frequency rearm, queued UI loss/preserve, delayed-timer body,
+plus prior eight). `Helicoid.WindowsIntegrationTests` builds with
+`-warnaserror` 0 w / 0 e; `git diff --check` clean. Native CI remains previous
+429/67 until a new Windows run. Earlier dated entries follow.
+
+## Windows native v2 session expiry second review, 16 October 2026
+
+Independent six-test review reproduced two remaining causal failures against
+the first expiry package; both root causes are now repaired in-tree:
+(1) early one-shot deadline callback disposed its own rearm because the fired
+timer slot stayed non-null — the fired timer is detached and scheduling failure
+now force-invalidates the exact generation with `SessionExpired`; (2) delayed
+old expiry reset a replacement MFA `Completing` because `SessionGeneration` is
+0 without a bearer — the coordinator fences on `_installedSessionGeneration` +
+`_activeCts` + Phase under one gate and a UI epoch. All six independent
+`CoordinatorReview_*` regressions (actual clock / `ReviewEarlyClock`) are
+ported unweakened. Vacuous owner timer/notification tests replaced with
+genuine early-fire and barrier-interleaved proofs.
+
+Portable acceptance this host (macOS): domain **451 passed, 0 failed**
+including the six CoordinatorReview tests; `Helicoid.WindowsIntegrationTests`
+builds with `-warnaserror` 0 w / 0 e; `git diff --check` clean. Native Windows
+CI and Rust interoperability remain coordinator gates. Earlier dated entries
+follow.
+
+## Windows native v2 session expiry, 16 October 2026
+
+Bounded package on `codex/native-v2-auth-20261016` from baseline `57bea57`.
+`V2DeviceKeyChallengeClient` now converts a validated completion into a checked
+monotonic deadline at one reception sample (`TimeProvider.System` in production),
+enforces expiry on `HasSession` and every authorized send, uses weak deadline-timer
+ownership with early-fire rearm, and raises generation-fenced `SessionExpired`
+so stale notifications cannot reset a replacement. Stale 401/session/logout
+replies clear only their captured generation; session/inventory replies never
+renew the deadline. `V2SignInCoordinator` rejects expired completions before UI
+install; actual `ConnectionViewModel`/`MainViewModel` reset account/manager/TOTP
+and clear inventory/selection on `SessionLost` with UI-context dispatch and
+dispose/unsubscribe.
+
+Portable acceptance this host (macOS): domain **448 passed, 0 failed** (includes
+ported CoordinatorReview actual-clock/weak-retain/delayed-expiry regressions and
+the new V2SessionExpiry suite); `Helicoid.WindowsIntegrationTests` builds with
+`-warnaserror` 0 w / 0 e; `git diff --check` clean. Real WinUI builds, native
+tests, and installed Windows 11 remain coordinator CI gates — not claimed here.
+No protocol/schema/dependency changes. Earlier dated entries follow.
+
 ## Windows parent-handle access repair (pending native rerun), 16 October 2026
 
 Actual second native CI [38925659773](https://github.com/Helicoid-Systems/windows/actions/runs/38925659773)

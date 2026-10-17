@@ -16,17 +16,28 @@ namespace Helicoid.Manager.ViewModels;
 /// <see cref="OverviewState"/>. Inclusion, displayed IDs, selection, action
 /// snapshots, and admitted streams remain separate objects.
 /// </summary>
-public sealed class MainViewModel : INotifyPropertyChanged
+public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private bool _isGridView = true;
     private string _scopeLine = string.Empty;
+    private bool _disposed;
+    private int _inventorySessionGeneration;
 
-    public MainViewModel(DevelopmentLaunchOptions launchOptions)
+    /// <summary>
+    /// Create the manager shell. <paramref name="deviceKeySignIn"/> is optional
+    /// caller-supplied v2 sign-in state; this type never builds trust or
+    /// enrollment. Session loss clears session-scoped inventory and selection.
+    /// </summary>
+    public MainViewModel(
+        DevelopmentLaunchOptions launchOptions,
+        V2SignInCoordinator? deviceKeySignIn = null)
     {
         ArgumentNullException.ThrowIfNull(launchOptions);
         LaunchOptions = launchOptions;
         Client = launchOptions.CreateClient();
-        Connection = new ConnectionViewModel(launchOptions, Client);
+        Connection = new ConnectionViewModel(launchOptions, Client, deviceKeySignIn);
+        Connection.SessionLost += OnConnectionSessionLost;
+        Connection.SessionIdentityChanged += OnConnectionSessionIdentityChanged;
         Fixtures = new DevelopmentFixtureMode();
         Overview = new OverviewState();
         EngineStatus = RemoteEngineStatus.UnavailableNoBridge();
@@ -95,6 +106,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void ApplyServerInventory(IReadOnlyList<ComputerRecord> inventory)
     {
         ArgumentNullException.ThrowIfNull(inventory);
+        _inventorySessionGeneration = Connection.DeviceKeySignIn?.InstalledSessionGeneration ?? 0;
         var authorized = inventory.Select(c => c.Id).ToList();
         Overview.UpdateInventory(inventory, authorized);
         RebuildTiles(inventory);
@@ -105,6 +117,79 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         Overview.SetSearch(query);
         RefreshTilesFromOverview();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        Connection.SessionLost -= OnConnectionSessionLost;
+        Connection.SessionIdentityChanged -= OnConnectionSessionIdentityChanged;
+        Connection.Dispose();
+    }
+
+    /// <summary>
+    /// Session-scoped inventory and selection cannot outlive the session.
+    /// Reconnect never restores control (still unavailable). Device-key loss is
+    /// generation-fenced via SessionIdentityChanged; this generic path is the
+    /// legacy/no-v2 sign-out cleanup only and must not erase a replacement.
+    /// </summary>
+    private void OnConnectionSessionLost(object? sender, EventArgs e)
+    {
+        if (Connection.DeviceKeySignIn is not null)
+        {
+            // Identity transitions own device-key cleanup.
+            return;
+        }
+
+        ClearSessionScopedInventory();
+    }
+
+    /// <summary>
+    /// Generation-fenced identity transition. Clears inventory bound to the
+    /// old identity even when no transient signed-out Phase was observed;
+    /// a stale reset never erases inventory already loaded for a newer session.
+    /// Selection is session-scoped and is dropped on any identity change.
+    /// </summary>
+    private void OnConnectionSessionIdentityChanged(object? sender, SessionIdentityChangedEventArgs e)
+    {
+        if (e.NewGeneration == e.OldGeneration)
+        {
+            return;
+        }
+
+        if (_inventorySessionGeneration != 0 && _inventorySessionGeneration == e.OldGeneration)
+        {
+            ClearSessionScopedInventory();
+            return;
+        }
+
+        if (_inventorySessionGeneration == 0 && e.NewGeneration == 0 && e.OldGeneration != 0)
+        {
+            ClearSessionScopedInventory();
+            return;
+        }
+
+        // Inventory already belongs to a newer live identity: keep it.
+        // Selection still referenced the departed identity and must not leak.
+        if (e.OldGeneration != 0 || e.NewGeneration != 0)
+        {
+            ClearSelection();
+        }
+    }
+
+    private void ClearSessionScopedInventory()
+    {
+        _inventorySessionGeneration = 0;
+        var empty = Array.Empty<ComputerRecord>();
+        Overview.UpdateInventory(empty, empty.Select(c => c.Id).ToList());
+        RebuildTiles(empty);
+        UpdateScopeLine();
+        ClearSelection();
     }
 
     public void OnStatusFilterChanged(StatusFilter filter)

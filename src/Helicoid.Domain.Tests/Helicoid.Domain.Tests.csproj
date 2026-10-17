@@ -24,4 +24,10 @@
     <ProjectReference Include="..\Helicoid.WindowsPlatform\Helicoid.WindowsPlatform.csproj" />
   </ItemGroup>
 
+  <!-- Framework-independent manager view-model sources under test (not a facade). -->
+  <ItemGroup>
+    <Compile Include="..\Helicoid.Manager\ViewModels\ConnectionViewModel.cs" Link="Linked\ConnectionViewModel.cs" />
+    <Compile Include="..\Helicoid.Manager\ViewModels\MainViewModel.cs" Link="Linked\MainViewModel.cs" />
+  </ItemGroup>
+
 </Project>

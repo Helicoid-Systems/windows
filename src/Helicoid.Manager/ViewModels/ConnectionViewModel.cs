@@ -24,15 +24,19 @@ public enum ConnectionUiState
 /// server option. Production device-key challenge sign-in requires real
 /// supplied authority trust; when absent the UI stays explicitly closed.
 /// </summary>
-public sealed class ConnectionViewModel : INotifyPropertyChanged
+public sealed class ConnectionViewModel : INotifyPropertyChanged, IDisposable
 {
     private string _statusMessage = string.Empty;
     private string _detailMessage = string.Empty;
     private ConnectionUiState _state = ConnectionUiState.ProductionClosed;
     private string _username = string.Empty;
     private string _managerIdentity = string.Empty;
+    private string _signedInAccountName = string.Empty;
+    private string _managerLifecycleState = string.Empty;
     private bool _isDevelopmentEnabled;
     private bool _requiresTotp;
+    private bool _disposed;
+    private readonly SynchronizationContext? _notifyContext;
 
     public ConnectionViewModel(
         DevelopmentLaunchOptions launchOptions,
@@ -46,6 +50,7 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
         DeviceKeySignIn = deviceKeySignIn;
         _isDevelopmentEnabled = launchOptions.DevelopmentServerEnabled;
         _managerIdentity = launchOptions.DevelopmentManagerIdentity ?? string.Empty;
+        _notifyContext = SynchronizationContext.Current;
 
         if (deviceKeySignIn is not null)
         {
@@ -53,6 +58,7 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
             _statusMessage = deviceKeySignIn.StatusMessage;
             _detailMessage = deviceKeySignIn.DetailMessage;
             deviceKeySignIn.PropertyChanged += OnDeviceKeySignInChanged;
+            deviceKeySignIn.SessionIdentityChanged += OnDeviceKeySessionIdentityChanged;
         }
         else if (!launchOptions.DevelopmentServerEnabled)
         {
@@ -67,6 +73,19 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
             _detailMessage = "Sign in to the local development server. Manager identity is a development label, not a production identity.";
         }
     }
+
+    /// <summary>
+    /// Raised when an established session is lost (automatic expiry or
+    /// sign-out) so owners can drop session-scoped inventory and selection.
+    /// </summary>
+    public event EventHandler? SessionLost;
+
+    /// <summary>
+    /// Generation-fenced session identity transition from the sign-in
+    /// coordinator. Applied on the UI synchronization context so queued Phase
+    /// snapshots cannot hide a lost or replaced identity.
+    /// </summary>
+    public event EventHandler<SessionIdentityChangedEventArgs>? SessionIdentityChanged;
 
     public DevelopmentLaunchOptions LaunchOptions { get; }
 
@@ -158,11 +177,55 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
         }
     }
 
-    public string SignedInAccountName { get; private set; } = string.Empty;
+    public string SignedInAccountName
+    {
+        get => _signedInAccountName;
+        private set
+        {
+            if (_signedInAccountName == value)
+            {
+                return;
+            }
 
-    public string ManagerLifecycleState { get; private set; } = string.Empty;
+            _signedInAccountName = value;
+            OnPropertyChanged();
+        }
+    }
+
+    public string ManagerLifecycleState
+    {
+        get => _managerLifecycleState;
+        private set
+        {
+            if (_managerLifecycleState == value)
+            {
+                return;
+            }
+
+            _managerLifecycleState = value;
+            OnPropertyChanged();
+        }
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        if (DeviceKeySignIn is not null)
+        {
+            DeviceKeySignIn.PropertyChanged -= OnDeviceKeySignInChanged;
+            DeviceKeySignIn.SessionIdentityChanged -= OnDeviceKeySessionIdentityChanged;
+        }
+
+        SessionLost = null;
+        SessionIdentityChanged = null;
+    }
 
     public async Task SignInAsync(string password, CancellationToken cancellationToken)
     {
@@ -262,6 +325,7 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
 
         SignedInAccountName = string.Empty;
         ManagerLifecycleState = string.Empty;
+        var wasSignedIn = State == ConnectionUiState.SignedIn;
         State = IsDevelopmentEnabled
             ? ConnectionUiState.ReadyForDevelopmentSignin
             : ConnectionUiState.ProductionClosed;
@@ -269,11 +333,68 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
             ? "Signed out."
             : "Server sign-in is not available in this build.";
         DetailMessage = string.Empty;
+        if (wasSignedIn)
+        {
+            SessionLost?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private void OnDeviceKeySignInChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (DeviceKeySignIn is null)
+        if (DeviceKeySignIn is null || _disposed)
+        {
+            return;
+        }
+
+        // Coordinating property updates may arrive from a deadline timer.
+        // Marshal to the captured UI synchronization context when present.
+        if (_notifyContext is not null && SynchronizationContext.Current != _notifyContext)
+        {
+            _notifyContext.Post(_ => ApplyDeviceKeySignInChange(e), null);
+            return;
+        }
+
+        ApplyDeviceKeySignInChange(e);
+    }
+
+    private void OnDeviceKeySessionIdentityChanged(object? sender, SessionIdentityChangedEventArgs e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // Identity transitions must be applied at the UI seam even when Phase
+        // events are coalesced or an old notification is skipped.
+        if (_notifyContext is not null && SynchronizationContext.Current != _notifyContext)
+        {
+            _notifyContext.Post(_ => ApplySessionIdentityChange(e), null);
+            return;
+        }
+
+        ApplySessionIdentityChange(e);
+    }
+
+    private void ApplySessionIdentityChange(SessionIdentityChangedEventArgs e)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // Generation-fenced identity transition. SessionLost remains a
+        // compatibility signal for observers; MainViewModel scopes cleanup to
+        // legacy/no-v2 so a generic loss cannot erase a replacement's inventory.
+        SessionIdentityChanged?.Invoke(this, e);
+        if (e.OldGeneration != 0 && e.NewGeneration != e.OldGeneration)
+        {
+            SessionLost?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private void ApplyDeviceKeySignInChange(PropertyChangedEventArgs e)
+    {
+        if (DeviceKeySignIn is null || _disposed)
         {
             return;
         }
@@ -296,6 +417,8 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
                 SignedInAccountName = DeviceKeySignIn.SignedInAccountName;
                 ManagerLifecycleState = DeviceKeySignIn.ManagerLifecycleState;
                 RequiresTotp = DeviceKeySignIn.RequiresTotp;
+                // Device-key loss is generation-fenced via SessionIdentityChanged.
+                // Generic SessionLost remains for legacy/no-v2 sign-out only.
                 break;
             case nameof(V2SignInCoordinator.RequiresTotp):
                 RequiresTotp = DeviceKeySignIn.RequiresTotp;
@@ -305,6 +428,12 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged
                 break;
             case nameof(V2SignInCoordinator.DetailMessage):
                 DetailMessage = DeviceKeySignIn.DetailMessage;
+                break;
+            case nameof(V2SignInCoordinator.SignedInAccountName):
+                SignedInAccountName = DeviceKeySignIn.SignedInAccountName;
+                break;
+            case nameof(V2SignInCoordinator.ManagerLifecycleState):
+                ManagerLifecycleState = DeviceKeySignIn.ManagerLifecycleState;
                 break;
             case nameof(V2SignInCoordinator.CanStart):
             case nameof(V2SignInCoordinator.CanCompleteTotp):
