@@ -52,7 +52,7 @@ Computers first: inclusion, preview grid, and selected-or-displayed actions, wit
 <table width="100%">
 <tbody>
 <tr>
-<td align="center" width="1200">
+<td align="center" colspan="2" width="1200">
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="icons/windows-white.svg"><img src="icons/windows-dark.svg" height="24" align="absmiddle" alt=""></picture> Helicoid Manager
 
@@ -66,43 +66,15 @@ dotnet build Helicoid.Windows.slnx -c Release
 <br><br>
 
 </td>
-<td align="center" width="50%">
+</tr>
+<tr>
+<td align="center" colspan="2" width="1200">
 
 ### <picture><source media="(prefers-color-scheme: dark)" srcset="icons/windows-white.svg"><img src="icons/windows-dark.svg" height="24" align="absmiddle" alt=""></picture> Helicoid Computer
 
 Monitored-computer status: honest operator status with no user Stop Control command. Window icon and taskbar identity come from the role-specific Windows icon.
 
 <a href="src/Helicoid.Computer">Computer sources</a>
-<br><br>
-
-</td>
-</tr>
-<tr>
-<td align="center" width="50%">
-
-### <picture><source media="(prefers-color-scheme: dark)" srcset="icons/flask-white.svg"><img src="icons/flask-dark.svg" height="24" align="absmiddle" alt=""></picture> Domain and tests
-
-Portable domain model, overview state, setup wizard, agent status, and loopback development HTTP client. xUnit suite runs on any OS with the .NET 10 SDK.
-
-```
-dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --nologo
-```
-
-<a href="src/Helicoid.Domain">Domain sources</a>
-<br><br>
-
-</td>
-<td align="center" width="50%">
-
-### <picture><source media="(prefers-color-scheme: dark)" srcset="icons/flask-white.svg"><img src="icons/flask-dark.svg" height="24" align="absmiddle" alt=""></picture> Development server
-
-Loopback-only development client for trying the UI against `modules/server`. Remote hosts are refused before any request; tokens stay in memory only.
-
-```
-.\Helicoid.Manager.exe --development-server --development-manager-identity my-dev-manager
-```
-
-<a href="#development-server-mode">Development rules</a>
 <br><br>
 
 </td>
@@ -235,7 +207,7 @@ Does not:
 
 ## Wireframe assets
 
-Header, section, and product-grid styling follows the templates repo wireframe: centered `picture` logo with dark/light `srcset`, full-width `About` / `Purpose` tables, `icons/stripes.svg` separator, and the 2x2 product table with `icons/windows-*.svg` and `icons/flask-*.svg` headings. `icons/` and `logos/` here are verbatim copies from `Helicoid-Systems/templates` so the above `srcset` paths resolve.
+Header, section, and product-list styling follows the templates repo wireframe: centered `picture` logo with dark/light `srcset`, full-width `About` / `Purpose` tables, `icons/stripes.svg` separator, and the stacked product list with `icons/windows-*.svg` headings. `icons/` and `logos/` here are verbatim copies from `Helicoid-Systems/templates` so the above `srcset` paths resolve.
 
 ## Package pins (checked on nuget.org, 10 October 2026)
 
