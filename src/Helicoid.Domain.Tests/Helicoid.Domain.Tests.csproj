@@ -28,6 +28,8 @@
   <ItemGroup>
     <Compile Include="..\Helicoid.Manager\ViewModels\ConnectionViewModel.cs" Link="Linked\ConnectionViewModel.cs" />
     <Compile Include="..\Helicoid.Manager\ViewModels\MainViewModel.cs" Link="Linked\MainViewModel.cs" />
+    <!-- Computer presentation seam (portable; no WinUI types). -->
+    <Compile Include="..\Helicoid.Computer\ViewModels\AgentStatusViewModel.cs" Link="Linked\AgentStatusViewModel.cs" />
   </ItemGroup>
 
 </Project>

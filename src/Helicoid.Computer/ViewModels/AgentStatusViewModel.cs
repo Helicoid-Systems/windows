@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using Helicoid.Domain.Agent;
 using Helicoid.Domain.Worker;
 using Helicoid.WindowsPlatform;
@@ -13,9 +15,10 @@ namespace Helicoid.Computer.ViewModels;
 /// claiming enrollment/media. No pixels/input/networking enabled until a
 /// real admitted ABI exists.
 /// </summary>
-public sealed class AgentStatusViewModel
+public sealed class AgentStatusViewModel : INotifyPropertyChanged
 {
     private WorkerSupervisor? _supervisor;
+    private bool _isDetailsExpanded;
 
     public AgentStatusViewModel()
     {
@@ -23,6 +26,8 @@ public sealed class AgentStatusViewModel
         // Honest default before enrollment backend exists.
         Status.SetConnection(AgentConnectionState.NotEnrolled);
     }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 
     public AgentStatus Status { get; }
 
@@ -33,21 +38,112 @@ public sealed class AgentStatusViewModel
     public void SetSupervisor(WorkerSupervisor? supervisor)
     {
         _supervisor = supervisor;
+        RaisePresentationChanged();
     }
+
+    /// <summary>
+    /// Collapsed technical details (supervisor, worker, generation).
+    /// <see cref="ViewDetailsLabel"/> toggles this.
+    /// </summary>
+    public bool IsDetailsExpanded
+    {
+        get => _isDetailsExpanded;
+        set
+        {
+            if (_isDetailsExpanded == value)
+            {
+                return;
+            }
+
+            _isDetailsExpanded = value;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(ViewDetailsLabel));
+            OnPropertyChanged(nameof(DetailsChevronGlyph));
+        }
+    }
+
+    public string ViewDetailsLabel => IsDetailsExpanded ? "Hide Details" : "View Details";
+
+    /// <summary>ChevronDown when collapsed, ChevronUp when expanded (Fluent).</summary>
+    public string DetailsChevronGlyph => IsDetailsExpanded ? "\uE70E" : "\uE70D";
 
     public string Title => "Helicoid Computer";
 
+    /// <summary>
+    /// Connection identity, shown once. Unknown and not-enrolled never claim
+    /// Connected or Ready.
+    /// </summary>
     public string ConnectionSummary => Status.ConnectionState switch
     {
         AgentConnectionState.NotEnrolled => "Not enrolled",
         AgentConnectionState.PendingApproval => "Waiting for administrator approval",
         AgentConnectionState.Connected => "Connected to Helicoid server",
         AgentConnectionState.Disconnected => "Disconnected from Helicoid server",
-        AgentConnectionState.NeedsPermissions => "Screen recording permission required",
+        // Windows wording only. No invented OS permission name; real cause
+        // belongs in Details when a platform API actually supplies one.
+        AgentConnectionState.NeedsPermissions => "Screen Access Unavailable",
         _ => "Unknown",
     };
 
-    public string OperatorSummary => Status.StatusSummary();
+    /// <summary>
+    /// Screen-access identity from actual operator activity only. Worker
+    /// diagnostic readiness does not prove media or disclosure liveness.
+    /// Empty when connection state already carries the sole honest line.
+    /// </summary>
+    public string AccessHeadline
+    {
+        get
+        {
+            if (Status.ControllingOperator is { } controller)
+            {
+                return $"{controller.DisplayName} is controlling this computer";
+            }
+
+            if (Status.Observers.Count == 1)
+            {
+                return $"Your screen is being viewed by {Status.Observers[0].DisplayName}";
+            }
+
+            if (Status.Observers.Count > 1)
+            {
+                return $"Your screen is being viewed by {Status.Observers.Count} operators";
+            }
+
+            return Status.ConnectionState switch
+            {
+                AgentConnectionState.Connected => "No active screen access",
+                _ => string.Empty,
+            };
+        }
+    }
+
+    public bool HasAccessHeadline => AccessHeadline.Length > 0;
+
+    /// <summary>
+    /// Required actual failures stay visible without expanding details.
+    /// Healthy/idle states add no extra line.
+    /// </summary>
+    public string? FailureNote
+    {
+        get
+        {
+            if (_supervisor is null)
+            {
+                return null;
+            }
+
+            return _supervisor.Status switch
+            {
+                SupervisorStatus.WorkerFailed => $"Worker failed ({_supervisor.ConsecutiveFailures} consecutive)",
+                SupervisorStatus.SessionLocked => "Session locked",
+                SupervisorStatus.ConsoleNotEligible => "Console not eligible",
+                SupervisorStatus.GenerationInvalidated => "Generation invalidated",
+                _ => null,
+            };
+        }
+    }
+
+    public bool HasFailureNote => FailureNote is not null;
 
     /// <summary>
     /// Supervisor status summary. Shows worker lifecycle state without
@@ -65,7 +161,7 @@ public sealed class AgentStatusViewModel
             return _supervisor.Status switch
             {
                 SupervisorStatus.Idle => "Idle",
-                SupervisorStatus.StartingWorker => "Starting worker...",
+                SupervisorStatus.StartingWorker => "Starting worker",
                 SupervisorStatus.WorkerRunning => "Worker running",
                 SupervisorStatus.WorkerFailed => $"Worker failed ({_supervisor.ConsecutiveFailures} consecutive)",
                 SupervisorStatus.SessionLocked => "Session locked",
@@ -78,7 +174,8 @@ public sealed class AgentStatusViewModel
     }
 
     /// <summary>
-    /// Worker status detail.
+    /// Worker status detail. Diagnostic only — never proof of media or
+    /// screen-access liveness.
     /// </summary>
     public string WorkerStatusSummary
     {
@@ -92,11 +189,11 @@ public sealed class AgentStatusViewModel
             return _supervisor.WorkerStatus switch
             {
                 WorkerStatus.NotStarted => "Not started",
-                WorkerStatus.Starting => "Starting...",
+                WorkerStatus.Starting => "Starting",
                 WorkerStatus.Connected => "Connected",
                 WorkerStatus.Running => "Running",
                 WorkerStatus.Working => "Working",
-                WorkerStatus.ShuttingDown => "Shutting down...",
+                WorkerStatus.ShuttingDown => "Shutting down",
                 WorkerStatus.Exited => "Exited",
                 WorkerStatus.Failed => "Failed",
                 WorkerStatus.Killed => "Killed",
@@ -111,20 +208,65 @@ public sealed class AgentStatusViewModel
     public uint DesktopGeneration => _supervisor?.Generation.Value ?? 0;
 
     /// <summary>
+    /// Help stays unavailable until a real help transport exists.
+    /// ceiling: no help transport is configured or implemented.
+    /// </summary>
+    public bool CanRequestHelp => false;
+
+    /// <summary>
     /// User command surface. Stop Control is intentionally absent.
     /// </summary>
     public IReadOnlyList<string> UserCommands => Status.AvailableUserCommands();
 
     public bool ShowsStopControl => false;
 
+    /// <summary>
+    /// One short contract note for the collapsed details region. Not repeated
+    /// in the compact status body.
+    /// </summary>
     public string StopControlNote =>
-        "The computer user cannot stop remote control from this app. "
-        + "The controlling operator or authorized IT can stop it, and security teardown still applies automatically.";
+        "This computer user has no Stop Control. The operator or authorized IT can stop access.";
 
     public void ApplyDemoConnectedState(string controllerName, params string[] observers)
     {
         Status.SetConnection(AgentConnectionState.Connected);
         Status.SetObservers(observers);
         Status.SetControllingOperator(controllerName);
+        RaisePresentationChanged();
     }
+
+    public void SetConnection(AgentConnectionState state)
+    {
+        Status.SetConnection(state);
+        RaisePresentationChanged();
+    }
+
+    public void SetObservers(IEnumerable<string> operatorNames)
+    {
+        Status.SetObservers(operatorNames);
+        RaisePresentationChanged();
+    }
+
+    public void SetControllingOperator(string? displayName)
+    {
+        Status.SetControllingOperator(displayName);
+        RaisePresentationChanged();
+    }
+
+    private void RaisePresentationChanged()
+    {
+        OnPropertyChanged(nameof(ConnectionSummary));
+        OnPropertyChanged(nameof(AccessHeadline));
+        OnPropertyChanged(nameof(HasAccessHeadline));
+        OnPropertyChanged(nameof(FailureNote));
+        OnPropertyChanged(nameof(HasFailureNote));
+        OnPropertyChanged(nameof(SupervisorStatusSummary));
+        OnPropertyChanged(nameof(WorkerStatusSummary));
+        OnPropertyChanged(nameof(DesktopGeneration));
+        OnPropertyChanged(nameof(UserCommands));
+        OnPropertyChanged(nameof(CanRequestHelp));
+    }
+
+    private void OnPropertyChanged([CallerMemberName] string? name = null) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }

@@ -8,8 +8,16 @@ public sealed class DevelopmentLaunchOptions
 {
     public const string DevelopmentServerSwitch = "--development-server";
     public const string DevelopmentIdentitySwitch = "--development-manager-identity";
+    public const string DevelopmentFixturesSwitch = "--development-fixtures";
 
     public bool DevelopmentServerEnabled { get; private set; }
+
+    /// <summary>
+    /// Explicit launch fixture option. Ordinary UI has no fixture toggle;
+    /// sample inventory loads only when this switch is present and is labeled
+    /// as non-production data.
+    /// </summary>
+    public bool DevelopmentFixturesEnabled { get; private set; }
 
     public string? DevelopmentServerAddress { get; private set; }
 
@@ -59,6 +67,12 @@ public sealed class DevelopmentLaunchOptions
                 options.ApplyValue(
                     DevelopmentIdentitySwitch,
                     arg[(DevelopmentIdentitySwitch.Length + 1)..]);
+                continue;
+            }
+
+            if (arg.Equals(DevelopmentFixturesSwitch, StringComparison.OrdinalIgnoreCase))
+            {
+                options.DevelopmentFixturesEnabled = true;
             }
         }
 

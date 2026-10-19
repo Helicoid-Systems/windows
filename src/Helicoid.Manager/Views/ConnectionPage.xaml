@@ -1,58 +1,42 @@
 <Page
     x:Class="Helicoid.Manager.Views.ConnectionPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-
-    <ScrollViewer Padding="16">
-        <StackPanel Spacing="16" MaxWidth="520">
-            <TextBlock Text="Connect to Server" Style="{StaticResource TitleTextBlockStyle}" />
-
-            <InfoBar
-                x:Name="ModeInfo"
-                IsOpen="True"
-                Severity="Informational"
-                Title="Server access"
-                Message="Sign-in is not available in this build." />
-
-            <TextBox
-                x:Name="UsernameBox"
-                Header="Username"
-                IsEnabled="False"
-                TextChanged="UsernameBox_TextChanged" />
-
-            <PasswordBox
-                x:Name="PasswordBox"
-                Header="Password"
-                IsEnabled="False" />
-
-            <TextBox
-                x:Name="ManagerIdentityBox"
-                Header="Manager identity (development label)"
-                IsEnabled="False"
-                TextChanged="ManagerIdentityBox_TextChanged" />
-
-            <TextBlock
-                Text="The manager identity is a local development label. It is not a production cryptographic identity."
-                Style="{StaticResource CaptionTextBlockStyle}"
-                TextWrapping="Wrap" />
-
-            <!-- Conditional TOTP: visible only when a device-key challenge requires a factor code. -->
-            <StackPanel x:Name="TotpPanel" Spacing="8" Visibility="Collapsed">
-                <PasswordBox
-                    x:Name="TotpBox"
-                    Header="Authentication code"
-                    IsEnabled="False" />
-                <Button x:Name="SubmitTotpButton" Content="Verify Code" IsEnabled="False" Click="SubmitTotp_Click" />
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    KeyDown="Page_KeyDown">
+    <Grid Padding="24" RowSpacing="16" MaxWidth="600" HorizontalAlignment="Stretch">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="16">
+                <TextBlock x:Name="TaskTitle" Text="Connect to Server" Style="{StaticResource SubtitleTextBlockStyle}" />
+                <TextBlock x:Name="StatusText" TextWrapping="Wrap" />
+                <StackPanel x:Name="CredentialFields" Spacing="12">
+                    <TextBox x:Name="UsernameBox" Header="Username" TextChanged="UsernameBox_TextChanged" />
+                    <PasswordBox x:Name="PasswordBox" Header="Password" PasswordChanged="Secret_Changed" />
+                    <TextBox x:Name="ManagerIdentityBox" Header="Development manager label" Visibility="Collapsed" TextChanged="ManagerIdentityBox_TextChanged" />
+                </StackPanel>
+                <StackPanel x:Name="TotpPanel" Spacing="8" Visibility="Collapsed">
+                    <PasswordBox x:Name="TotpBox" Header="Verification code" PasswordChanged="Secret_Changed" />
+                </StackPanel>
+                <Expander x:Name="Details" Header="Details" Visibility="Collapsed" HorizontalAlignment="Stretch">
+                    <TextBlock x:Name="DetailText" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                </Expander>
             </StackPanel>
-
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button x:Name="SignInButton" Content="Sign In" IsEnabled="False" Click="SignIn_Click" />
-                <Button x:Name="CancelButton" Content="Cancel" IsEnabled="False" Click="Cancel_Click" />
-                <Button x:Name="SignOutButton" Content="Sign Out" IsEnabled="False" Click="SignOut_Click" />
-            </StackPanel>
-
-            <TextBlock x:Name="StatusText" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
-            <TextBlock x:Name="DetailText" Style="{StaticResource BodyTextBlockStyle}" TextWrapping="Wrap" />
-        </StackPanel>
-    </ScrollViewer>
+        </ScrollViewer>
+        <Grid Grid.Row="1" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <Button x:Name="CancelButton" Grid.Column="0" Content="Cancel" Click="Cancel_Click" Visibility="Collapsed" />
+            <ProgressRing x:Name="Activity" Grid.Column="2" Width="20" Height="20" IsActive="False" Visibility="Collapsed" AutomationProperties.Name="Signing in" />
+            <Button x:Name="SignInButton" Grid.Column="3" Content="Sign In" Click="SignIn_Click" />
+            <Button x:Name="SubmitTotpButton" Grid.Column="3" Content="Verify" Click="SubmitTotp_Click" Visibility="Collapsed" />
+            <Button x:Name="SignOutButton" Grid.Column="3" Content="Sign Out" Click="SignOut_Click" Visibility="Collapsed" />
+        </Grid>
+    </Grid>
 </Page>

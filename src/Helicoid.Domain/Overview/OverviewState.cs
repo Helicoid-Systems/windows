@@ -38,6 +38,42 @@ public sealed class OverviewState
     /// <summary>Actions currently open with frozen IDs.</summary>
     public IReadOnlyList<ActionSnapshot> OpenActionSnapshots => _openActionSnapshots;
 
+    /// <summary>
+    /// Genuine session demand state. While paused, overview demand is suspended
+    /// and admitted streams are cleared. Not a refresh alias.
+    /// </summary>
+    public bool IsMonitoringPaused { get; private set; }
+
+    /// <summary>Authorized inventory count for empty-state distinction.</summary>
+    public int AuthorizedCount => _authorizedIds.Count;
+
+    /// <summary>Inventory rows currently loaded (authorized or not).</summary>
+    public int InventoryCount => _inventory.Count;
+
+    /// <summary>Why the displayed list is empty, for distinct empty states.</summary>
+    public InventoryEmptyKind EmptyKind
+    {
+        get
+        {
+            if (_displayedIds.Count > 0)
+            {
+                return InventoryEmptyKind.None;
+            }
+
+            if (_authorizedIds.Count == 0)
+            {
+                return InventoryEmptyKind.NoInventory;
+            }
+
+            if (Inclusion.Resolve(_authorizedIds).Count == 0)
+            {
+                return InventoryEmptyKind.NoInclusion;
+            }
+
+            return InventoryEmptyKind.NoMatches;
+        }
+    }
+
     public void SetInclusion(MonitoringInclusion inclusion)
     {
         ArgumentNullException.ThrowIfNull(inclusion);
@@ -79,12 +115,28 @@ public sealed class OverviewState
         RecomputeDisplayed();
     }
 
+    /// <summary>
+    /// Clear search and status filters only. Inclusion and selection stay put;
+    /// this action does exactly its name.
+    /// </summary>
+    public void ClearFilters()
+    {
+        Filter.ClearSearch();
+        Filter.SetStatus(StatusFilter.All);
+        RecomputeDisplayed();
+    }
+
+    /// <summary>
+    /// Stable natural-name order with ID tie break so range selection and
+    /// visual order match across reflows.
+    /// </summary>
     private void RecomputeDisplayed()
     {
         var included = Inclusion.Resolve(_authorizedIds);
         var byId = _inventory.ToDictionary(c => c.Id);
-        _displayedIds = included
-            .Where(id => byId.TryGetValue(id, out var record) && Filter.Matches(record))
+        _displayedIds = ComputerOrdering.OrderIdsForDisplay(
+                included.Where(id => byId.ContainsKey(id) && Filter.Matches(byId[id])),
+                _names)
             .ToList();
     }
 
@@ -134,9 +186,16 @@ public sealed class OverviewState
     /// <summary>
     /// Record or replace one admitted stream. Inclusion changes stop overview
     /// demand; independent detail windows are not retargeted by this method.
+    /// While monitoring is paused, overview demand cannot admit streams.
     /// </summary>
     public void UpsertAdmittedStream(ComputerId id, string streamKind)
     {
+        ArgumentNullException.ThrowIfNull(streamKind);
+        if (IsMonitoringPaused)
+        {
+            return;
+        }
+
         _admittedStreams.RemoveAll(s => s.ComputerId == id && s.StreamKind == streamKind);
         _admittedStreams.Add(new AdmittedStream(id, streamKind));
     }
@@ -148,6 +207,25 @@ public sealed class OverviewState
 
     /// <summary>Removing overview demand clears that computer's overview stream.</summary>
     public void OnInclusionRemoved(ComputerId id) => StopAdmittedStreams(id);
+
+    /// <summary>
+    /// Pause overview session demand and clear every admitted stream. Inventory,
+    /// inclusion, filters, and selection are retained.
+    /// </summary>
+    public void PauseMonitoring()
+    {
+        IsMonitoringPaused = true;
+        StopAllAdmittedStreams();
+    }
+
+    /// <summary>
+    /// Resume overview session demand. Streams are admitted again only when
+    /// demand logic upserts them; this never fabricates dispatch.
+    /// </summary>
+    public void ResumeMonitoring()
+    {
+        IsMonitoringPaused = false;
+    }
 }
 
 /// <summary>One actually admitted media stream, separate from inclusion demand.</summary>
