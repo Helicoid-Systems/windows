@@ -37,6 +37,8 @@ Native Windows 11 x64 sources for **Helicoid Manager** (operator console) and **
 
 Computers first: inclusion, preview grid, and selected-or-displayed actions, with honest empty, offline, and engine-unavailable states. No default fake computers — sample data is behind an explicit development fixture toggle, labeled as sample data. Capture, input forwarding, and server installation stay out of this build.
 
+The 20 October native UI checkpoint adds automatic session-bound inventory loading, stable Grid/List selection, four preview-size presets, a complete Computers panel, and independent view-only windows with revocation cleanup. Computer status is compact and reflects actual supervisor metadata. Unsupported installation and remote-engine actions remain unavailable. The coordinator reproduced 496 portable tests; native WinUI build and installed visual acceptance are separate checks.
+
 <br>
 
 </td>

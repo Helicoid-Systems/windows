@@ -301,7 +301,14 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged, IDisposable
         }
         catch (ServerClientException ex)
         {
-            ApplyFailure(ex);
+            // Inventory refresh is secondary. A failed fetch must not clobber
+            // an established session with a production-closed transition.
+            if (ex.Failure is not (ServerClientFailure.NotAvailableInThisBuild
+                or ServerClientFailure.NotConnected
+                or ServerClientFailure.Cancelled))
+            {
+                ApplyFailure(ex);
+            }
         }
     }
 

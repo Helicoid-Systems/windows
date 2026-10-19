@@ -11,26 +11,39 @@ namespace Helicoid.Manager;
 public sealed partial class MainWindow : Window
 {
     public MainViewModel ViewModel { get; }
+    public ViewerWindowCoordinator ViewerWindows { get; }
 
     public MainWindow(DevelopmentLaunchOptions launchOptions)
     {
         ArgumentNullException.ThrowIfNull(launchOptions);
         ViewModel = new MainViewModel(launchOptions);
+        ViewerWindows = new ViewerWindowCoordinator(ViewModel);
         InitializeComponent();
         Title = "Helicoid Manager";
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
         ApplyRoleWindowIcon("hs-manager-windowsicon.ico");
 
-        if (launchOptions.DevelopmentServerEnabled)
+        if (ViewModel.Fixtures.IsEnabled)
         {
             FixtureBadge.Visibility = Visibility.Visible;
-            ContentFrame.Navigate(typeof(ConnectionPage), ViewModel.Connection);
         }
-        else
+
+        SelectNavigation(ViewModel.Fixtures.IsEnabled ? "Computers" : "Connection");
+        ViewModel.Connection.PropertyChanged += (_, e) =>
         {
-            ContentFrame.Navigate(typeof(ComputersPage), ViewModel);
-        }
+            if (e.PropertyName == nameof(ConnectionViewModel.State)
+                && ViewModel.Connection.State == ConnectionUiState.SignedIn)
+            {
+                SelectNavigation("Computers");
+            }
+        };
+    }
+
+    private void SelectNavigation(string tag)
+    {
+        RootNav.SelectedItem = RootNav.MenuItems.OfType<NavigationViewItem>()
+            .First(item => item.Tag as string == tag);
     }
 
     private void ApplyRoleWindowIcon(string fileName)

@@ -17,62 +17,72 @@
                 Margin="16,0,0,0" />
         </Grid>
 
-        <Grid Grid.Row="1" Padding="20" RowSpacing="12">
+        <!-- Compact endpoint status: connection and screen-access identity once.
+             Technical details collapse behind View Details. -->
+        <Grid Grid.Row="1" Padding="16" RowSpacing="8">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
-                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <TextBlock Grid.Row="0" Text="Status" Style="{StaticResource TitleTextBlockStyle}" />
-
-        <StackPanel Grid.Row="1" Spacing="4">
-            <TextBlock x:Name="ConnectionText" Text="Not enrolled" Style="{StaticResource BodyStrongTextBlockStyle}" />
-            <TextBlock x:Name="OperatorText" Text="Connected. No active screen access" Style="{StaticResource BodyTextBlockStyle}" />
-        </StackPanel>
-
-        <StackPanel Grid.Row="2" Spacing="4">
-            <TextBlock x:Name="SupervisorText" Text="Supervisor: No supervisor" Style="{StaticResource BodyTextBlockStyle}" />
-            <TextBlock x:Name="WorkerText" Text="Worker: No worker" Style="{StaticResource BodyTextBlockStyle}" />
-            <TextBlock x:Name="GenerationText" Text="Generation: 0" Style="{StaticResource CaptionTextBlockStyle}" />
-        </StackPanel>
-
-        <InfoBar
-            Grid.Row="3"
-            x:Name="AccessInfo"
-            IsOpen="True"
-            Severity="Informational"
-            Title="Screen access"
-            Message="No active screen access" />
-
-        <InfoBar
-            Grid.Row="4"
-            IsOpen="True"
-            Severity="Informational"
-            Title="Stopping remote control"
-            Message="The computer user cannot stop remote control from this app. The controlling operator or authorized IT can stop it, and security teardown still applies automatically." />
-
-        <StackPanel Grid.Row="5" Spacing="8">
-            <TextBlock Text="Available actions" Style="{StaticResource SubtitleTextBlockStyle}" />
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button x:Name="RequestHelpButton" Content="Request Help" IsEnabled="False" />
-                <Button x:Name="ViewDetailsButton" Content="View Details" IsEnabled="False" />
-            </StackPanel>
             <TextBlock
-                Text="There is no Stop Control command on this computer."
-                Style="{StaticResource CaptionTextBlockStyle}"
+                Grid.Row="0"
+                x:Name="ConnectionText"
+                Text="Not enrolled"
+                Style="{StaticResource BodyStrongTextBlockStyle}"
                 TextWrapping="Wrap" />
-        </StackPanel>
 
-        <TextBlock
-            Grid.Row="6"
-            Text="Developed by Helicoid Systems"
-            Style="{StaticResource CaptionTextBlockStyle}"
-            HorizontalAlignment="Center" />
+            <TextBlock
+                Grid.Row="1"
+                x:Name="AccessText"
+                Text=""
+                Style="{StaticResource BodyTextBlockStyle}"
+                TextWrapping="Wrap" />
+
+            <TextBlock
+                Grid.Row="2"
+                x:Name="FailureText"
+                Text=""
+                Style="{StaticResource BodyTextBlockStyle}"
+                TextWrapping="Wrap"
+                Visibility="Collapsed" />
+
+            <Button
+                Grid.Row="3"
+                x:Name="ViewDetailsButton"
+                HorizontalAlignment="Left"
+                Padding="8,4"
+                Click="ViewDetailsButton_Click"
+                AutomationProperties.Name="View Details">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <FontIcon
+                        x:Name="DetailsChevron"
+                        Glyph="&#xE70D;"
+                        FontSize="12"
+                        VerticalAlignment="Center" />
+                    <TextBlock x:Name="ViewDetailsLabel" Text="View Details" />
+                </StackPanel>
+            </Button>
+
+            <ScrollViewer
+                Grid.Row="4"
+                x:Name="DetailsScroll"
+                Visibility="Collapsed"
+                VerticalScrollBarVisibility="Auto"
+                HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Spacing="8" Margin="0,8,0,0">
+                    <TextBlock x:Name="SupervisorText" Text="Supervisor: No supervisor" Style="{StaticResource BodyTextBlockStyle}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="WorkerText" Text="Worker: No worker" Style="{StaticResource BodyTextBlockStyle}" TextWrapping="Wrap" />
+                    <TextBlock x:Name="GenerationText" Text="Generation: 0" Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
+                    <TextBlock
+                        x:Name="StopControlNoteText"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        TextWrapping="Wrap" />
+                </StackPanel>
+            </ScrollViewer>
         </Grid>
     </Grid>
 </Window>

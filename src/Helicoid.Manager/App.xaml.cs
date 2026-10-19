@@ -5,7 +5,9 @@ namespace Helicoid.Manager;
 
 public partial class App : Application
 {
-    private Window? _window;
+    private MainWindow? _window;
+
+    public Views.ViewerWindowCoordinator? ViewerWindows => _window?.ViewerWindows;
 
     public App()
     {

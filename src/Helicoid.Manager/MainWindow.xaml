@@ -30,7 +30,7 @@
 
             <NavigationView.MenuItems>
                 <NavigationViewItem Content="Connection" Tag="Connection" />
-                <NavigationViewItem Content="Computers" Tag="Computers" IsSelected="True" />
+                <NavigationViewItem Content="Computers" Tag="Computers" />
                 <NavigationViewItem Content="Server Setup" Tag="ServerSetup" />
             </NavigationView.MenuItems>
 
