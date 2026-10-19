@@ -222,3 +222,5 @@ Header, section, and product-list styling follows the templates repo wireframe: 
 | xunit.runner.visualstudio | 4.0.1 |
 
 CI uses `actions/checkout@v7` and `actions/setup-dotnet@v6` with `dotnet-version: '10.0.x'`.
+
+Native [UI checkpoint CI 39343145295](https://github.com/Helicoid-Systems/windows/actions/runs/39343145295) passes at `b6f17fb61879c970242bf6784affb7f27f6a6146`: both WinUI applications compile and publish, 496 domain tests and 67 native integration tests pass, and supplied icons/launcher checks pass. The [unsigned x64 development bundle](https://github.com/Helicoid-Systems/windows/actions/runs/39343145295/artifacts/12230215088) is available for installed-device acceptance. Installed graphical/DPI/accessibility tests, actual capture/input, installation, production signing and deployment acceptance remain Not Verified.
