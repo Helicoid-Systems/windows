@@ -29,7 +29,7 @@ public sealed partial class MainWindow : Window
 
         // Size once after root is loaded so RasterizationScale is real.
         // Never re-apply after a user resize.
-        Content.Loaded += (_, _) => ApplyCompactWindowSizeOnce();
+        AppTitleBar.Loaded += (_, _) => ApplyCompactWindowSizeOnce();
 
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
 
