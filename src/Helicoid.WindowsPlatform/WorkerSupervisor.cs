@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Runtime.InteropServices;
 using Helicoid.Domain.Worker;
 using Helicoid.WindowsPlatform.Native;
@@ -114,9 +115,11 @@ public sealed record SupervisorConfig
 /// </summary>
 public sealed class WorkerSupervisor : IDisposable
 {
+    private static readonly TimeSpan CaptureOperationTimeout = TimeSpan.FromSeconds(3);
     private readonly SupervisorConfig _config;
     private readonly byte[] _bootId = FencingIds.GenerateId();
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _ipcExchangeGate = new(1, 1);
     private KillOnCloseJob? _job;
     private SafeProcessHandle? _childProcessHandle;
     private uint _childProcessId;
@@ -387,6 +390,122 @@ public sealed class WorkerSupervisor : IDisposable
         {
             HandleWorkerFailure("Exception during worker start");
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Ask the authenticated worker for one frame. The endpoint session calls
+    /// this only after server admission is current. Capture and heartbeat share
+    /// one serialized pipe exchange; the response and mapped frame are fenced
+    /// to the exact worker launch and desktop generation.
+    /// </summary>
+    internal async Task<CapturedObservationFrame?> CapturePrimaryDisplayAsync(
+        CancellationToken cancellationToken)
+    {
+        await _ipcExchangeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!OperatingSystem.IsWindows() || IsDisposed)
+            {
+                return null;
+            }
+
+            if (WorkerStatus != WorkerStatus.Connected)
+            {
+                throw new InvalidOperationException("The per-user capture worker is not connected.");
+            }
+
+            SupervisorIpcChannel? channel = _ipcChannel;
+            WorkerIdentity? worker = CurrentWorker;
+            if (channel is null || worker is null ||
+                !IsCurrentLaunch(worker.Value.LaunchId, worker.Value.Generation.Value))
+            {
+                return null;
+            }
+
+            FenceStamp fence = channel.CreateFenceStamp();
+            using var slot = ObservationFrameSlot.Create();
+            byte[] requestBody = slot.CreateRequestBody();
+            byte[] assignmentBytes = Array.Empty<byte>();
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                assignmentBytes = new WorkAssignmentPayload
+                {
+                    Fence = fence,
+                    Operation = WorkOperationCode.CapturePrimaryDisplay,
+                    Body = requestBody,
+                }.Serialize();
+
+                bool sent = await channel.TrySendMessageAsync(
+                    new IpcMessage
+                    {
+                        Type = IpcMessageType.WorkAssignment,
+                        Payload = assignmentBytes,
+                    }).ConfigureAwait(false);
+                if (!sent)
+                {
+                    HandleWorkerFailureFenced(
+                        "Capture assignment could not be sent",
+                        fence.LaunchId,
+                        fence.Generation);
+                    throw new IOException("The capture worker did not accept the frame request.");
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(requestBody);
+                CryptographicOperations.ZeroMemory(assignmentBytes);
+            }
+
+            using var replyTimeout = new CancellationTokenSource(CaptureOperationTimeout);
+            var (readResult, response) = await channel.ReadMessageAsync(replyTimeout.Token)
+                .ConfigureAwait(false);
+            try
+            {
+                if (readResult != IpcReadResult.Success ||
+                    response.Type != IpcMessageType.WorkAck ||
+                    !WorkAckPayload.TryDeserialize(response.Payload, out var acknowledgement) ||
+                    acknowledgement.Operation != WorkOperationCode.CapturePrimaryDisplay ||
+                    !acknowledgement.Fence.Matches(fence))
+                {
+                    HandleWorkerFailureFenced(
+                        $"Capture worker response was invalid: {readResult}",
+                        fence.LaunchId,
+                        fence.Generation);
+                    throw new IOException("The capture worker returned an invalid frame response.");
+                }
+
+                if (cancellationToken.IsCancellationRequested ||
+                    !IsCurrentLaunch(fence.LaunchId, fence.Generation))
+                {
+                    return null;
+                }
+
+                try
+                {
+                    return slot.ReadFrame(fence.Generation);
+                }
+                catch (InvalidDataException exception)
+                {
+                    HandleWorkerFailureFenced(
+                        "Capture worker returned an invalid frame slot",
+                        fence.LaunchId,
+                        fence.Generation);
+                    throw new IOException("The capture worker returned an invalid frame slot.", exception);
+                }
+            }
+            finally
+            {
+                if (response.Payload is not null)
+                {
+                    CryptographicOperations.ZeroMemory(response.Payload);
+                }
+            }
+        }
+        finally
+        {
+            _ipcExchangeGate.Release();
         }
     }
 
@@ -848,41 +967,59 @@ public sealed class WorkerSupervisor : IDisposable
                 while (!cts.Token.IsCancellationRequested)
                 {
                     await Task.Delay(_config.HeartbeatInterval, cts.Token).ConfigureAwait(false);
-
-                    if (!IsCurrentLaunch(launchId, generation))
+                    await _ipcExchangeGate.WaitAsync(cts.Token).ConfigureAwait(false);
+                    try
                     {
-                        return;
+                        if (!IsCurrentLaunch(launchId, generation))
+                        {
+                            return;
+                        }
+
+                        var channel = _ipcChannel;
+                        if (channel is null)
+                        {
+                            return;
+                        }
+
+                        var fence = channel.CreateFenceStamp();
+                        var ping = new IpcMessage
+                        {
+                            Type = IpcMessageType.HeartbeatPing,
+                            Payload = fence.Serialize(),
+                        };
+
+                        if (!channel.TrySendMessage(ping, _config.HeartbeatInterval))
+                        {
+                            HandleWorkerFailureFenced("Heartbeat send failed", launchId, generation);
+                            return;
+                        }
+
+                        // Bounded wait for the pong with matching fence stamp.
+                        using var readCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+                        readCts.CancelAfter(_config.HeartbeatTimeout);
+
+                        var (readResult, response) = await channel.ReadFencedMessageAsync(
+                            IpcMessageType.HeartbeatPong, readCts.Token).ConfigureAwait(false);
+                        try
+                        {
+                            if (readResult != IpcReadResult.Success)
+                            {
+                                HandleWorkerFailureFenced(
+                                    $"Heartbeat liveness failed: {readResult}", launchId, generation);
+                                return;
+                            }
+                        }
+                        finally
+                        {
+                            if (response.Payload is not null)
+                            {
+                                CryptographicOperations.ZeroMemory(response.Payload);
+                            }
+                        }
                     }
-
-                    var channel = _ipcChannel;
-                    if (channel is null)
+                    finally
                     {
-                        return;
-                    }
-
-                    var fence = channel.CreateFenceStamp();
-                    var ping = new IpcMessage
-                    {
-                        Type = IpcMessageType.HeartbeatPing,
-                        Payload = fence.Serialize(),
-                    };
-
-                    if (!channel.TrySendMessage(ping, _config.HeartbeatInterval))
-                    {
-                        HandleWorkerFailureFenced("Heartbeat send failed", launchId, generation);
-                        return;
-                    }
-
-                    // Bounded wait for the pong with matching fence stamp.
-                    using var readCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
-                    readCts.CancelAfter(_config.HeartbeatTimeout);
-
-                    var (readResult, _) = await channel.ReadFencedMessageAsync(
-                        IpcMessageType.HeartbeatPong, readCts.Token).ConfigureAwait(false);
-                    if (readResult != IpcReadResult.Success)
-                    {
-                        HandleWorkerFailureFenced($"Heartbeat liveness failed: {readResult}", launchId, generation);
-                        return;
+                        _ipcExchangeGate.Release();
                     }
                 }
             }
@@ -909,7 +1046,7 @@ public sealed class WorkerSupervisor : IDisposable
         cts?.Cancel();
     }
 
-    private static string? GetCurrentProcessTokenSid()
+    internal static string? GetCurrentProcessTokenSid()
     {
         IntPtr hProcess = Kernel32Native.GetCurrentProcess();
         if (!PipeNative.OpenProcessToken(hProcess, 0x0008, out var tokenHandle))
@@ -919,39 +1056,7 @@ public sealed class WorkerSupervisor : IDisposable
 
         using (tokenHandle)
         {
-            return GetTokenUserSid(tokenHandle.DangerousGetHandle());
-        }
-    }
-
-    internal static string? GetTokenUserSid(IntPtr tokenHandle)
-    {
-        if (!PipeNative.GetTokenInformation(tokenHandle, PipeNative.TokenUser, IntPtr.Zero, 0, out int needed)
-            && needed == 0)
-        {
-            return null;
-        }
-
-        IntPtr buffer = Marshal.AllocHGlobal(needed);
-        try
-        {
-            if (!PipeNative.GetTokenInformation(tokenHandle, PipeNative.TokenUser, buffer, needed, out _))
-            {
-                return null;
-            }
-
-            IntPtr pSid = Marshal.ReadIntPtr(buffer);
-            if (!PipeNative.ConvertSidToStringSidW(pSid, out IntPtr pStringSid))
-            {
-                return null;
-            }
-
-            string sid = Marshal.PtrToStringUni(pStringSid) ?? string.Empty;
-            Kernel32Native.LocalFree(pStringSid);
-            return sid;
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
+            return KernelIdentity.GetTokenUserSid(tokenHandle.DangerousGetHandle());
         }
     }
 

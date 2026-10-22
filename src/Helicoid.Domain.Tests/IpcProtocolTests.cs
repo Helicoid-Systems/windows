@@ -546,6 +546,37 @@ public sealed class IpcProtocolTests
     }
 
     [Fact]
+    public void WorkAssignmentPayload_Roundtrip_CaptureRequest_PreservesFenceAndBody()
+    {
+        var stamp = new FenceStamp
+        {
+            BootId = FencingIds.GenerateId(),
+            LaunchId = FencingIds.GenerateId(),
+            Generation = 9,
+        };
+        byte[] body = System.Text.Encoding.ASCII.GetBytes(
+            "Local\\HelicoidObservationFrame-0123456789ABCDEF0123456789ABCDEF");
+        var original = new WorkAssignmentPayload
+        {
+            Fence = stamp,
+            Operation = WorkOperationCode.CapturePrimaryDisplay,
+            Body = body,
+        };
+
+        byte[] serialized = original.Serialize();
+        Assert.True(WorkAssignmentPayload.TryDeserialize(serialized, out var parsed));
+        Assert.Equal(WorkOperationCode.CapturePrimaryDisplay, parsed.Operation);
+        Assert.True(parsed.Fence.Matches(stamp));
+        Assert.Equal(body, parsed.Body);
+        Assert.False(parsed.Fence.Matches(new FenceStamp
+        {
+            BootId = FencingIds.GenerateId(),
+            LaunchId = stamp.LaunchId,
+            Generation = stamp.Generation,
+        }));
+    }
+
+    [Fact]
     public void WorkAssignmentPayload_TryDeserialize_RejectsUnknownOperation()
     {
         var stamp = new FenceStamp

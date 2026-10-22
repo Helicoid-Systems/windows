@@ -104,7 +104,7 @@
         "type": "Project",
         "dependencies": {
           "Helicoid.Domain": "[1.0.0, )",
-          "Helicoid.WindowsPlatform": "[1.0.0, )"
+          "Helicoid.WorkerTransport": "[1.0.0, )"
         }
       },
       "helicoid.domain": {
@@ -114,6 +114,13 @@
         }
       },
       "helicoid.windowsplatform": {
+        "type": "Project",
+        "dependencies": {
+          "Helicoid.Domain": "[1.0.0, )",
+          "Helicoid.WorkerTransport": "[1.0.0, )"
+        }
+      },
+      "helicoid.workertransport": {
         "type": "Project",
         "dependencies": {
           "Helicoid.Domain": "[1.0.0, )"

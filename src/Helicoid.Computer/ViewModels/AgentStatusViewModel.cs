@@ -12,18 +12,20 @@ namespace Helicoid.Computer.ViewModels;
 /// security teardown apply.
 ///
 /// Surfaces current eligible/locked/unsupported/workerfailed status without
-/// claiming enrollment/media. No pixels/input/networking enabled until a
-/// real admitted ABI exists.
+/// claiming live media. Enrollment metadata does not enable pixels or input;
+/// no media transport is enabled until a real admitted ABI exists.
 /// </summary>
 public sealed class AgentStatusViewModel : INotifyPropertyChanged
 {
     private WorkerSupervisor? _supervisor;
     private bool _isDetailsExpanded;
+    private string? _enrollmentIssue;
+    private string? _enrollmentComputerId;
 
     public AgentStatusViewModel()
     {
         Status = new AgentStatus();
-        // Honest default before enrollment backend exists.
+        // A local enrollment receipt is loaded separately by the application.
         Status.SetConnection(AgentConnectionState.NotEnrolled);
     }
 
@@ -76,7 +78,9 @@ public sealed class AgentStatusViewModel : INotifyPropertyChanged
     public string ConnectionSummary => Status.ConnectionState switch
     {
         AgentConnectionState.NotEnrolled => "Not enrolled",
-        AgentConnectionState.PendingApproval => "Waiting for administrator approval",
+        AgentConnectionState.PendingApproval when _enrollmentComputerId is not null =>
+            $"Enrollment submitted for administrator approval · {_enrollmentComputerId}",
+        AgentConnectionState.PendingApproval => "Enrollment submitted for administrator approval",
         AgentConnectionState.Connected => "Connected to Helicoid server",
         AgentConnectionState.Disconnected => "Disconnected from Helicoid server",
         // Windows wording only. No invented OS permission name; real cause
@@ -127,6 +131,11 @@ public sealed class AgentStatusViewModel : INotifyPropertyChanged
     {
         get
         {
+            if (_enrollmentIssue is not null)
+            {
+                return _enrollmentIssue;
+            }
+
             if (_supervisor is null)
             {
                 return null;
@@ -238,6 +247,33 @@ public sealed class AgentStatusViewModel : INotifyPropertyChanged
     public void SetConnection(AgentConnectionState state)
     {
         Status.SetConnection(state);
+        RaisePresentationChanged();
+    }
+
+    public string? EnrollmentComputerId => _enrollmentComputerId;
+
+    public void SetEnrollmentAccepted(EndpointEnrollmentResult enrollment)
+    {
+        ArgumentNullException.ThrowIfNull(enrollment);
+        _enrollmentComputerId = enrollment.ComputerId;
+        _enrollmentIssue = null;
+        Status.SetConnection(AgentConnectionState.PendingApproval);
+        RaisePresentationChanged();
+    }
+
+    public void SetEnrollmentForgotten()
+    {
+        _enrollmentComputerId = null;
+        _enrollmentIssue = null;
+        Status.SetConnection(AgentConnectionState.NotEnrolled);
+        Status.SetObservers(Array.Empty<string>());
+        Status.SetControllingOperator(null);
+        RaisePresentationChanged();
+    }
+
+    public void SetEnrollmentIssue(string? message)
+    {
+        _enrollmentIssue = string.IsNullOrWhiteSpace(message) ? null : message;
         RaisePresentationChanged();
     }
 

@@ -6,18 +6,20 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
     <RootNamespace>Helicoid.CaptureWorker</RootNamespace>
     <AssemblyName>Helicoid.CaptureWorker</AssemblyName>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <NoWarn>$(NoWarn);CS1591</NoWarn>
-    <!-- Metadata-only worker: no pixels/input/networking until admitted ABI. -->
-    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- The per-user worker ships with its runtime so endpoint deployment does
+         not depend on a separately installed .NET runtime. -->
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
-    <ProjectReference Include="..\Helicoid.WindowsPlatform\Helicoid.WindowsPlatform.csproj" />
+    <ProjectReference Include="..\Helicoid.WorkerTransport\Helicoid.WorkerTransport.csproj" />
   </ItemGroup>
 
 </Project>

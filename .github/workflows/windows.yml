@@ -59,7 +59,6 @@ jobs:
         run: |
           dotnet publish src/Helicoid.Manager/Helicoid.Manager.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/manager
           dotnet publish src/Helicoid.Computer/Helicoid.Computer.csproj -c Release -r win-x64 -p:Platform=x64 -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true --self-contained true -o artifacts/computer
-          dotnet publish src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj -c Release -r win-x64 -p:ContinuousIntegrationBuild=true --self-contained true --nologo -o artifacts/computer
 
       - name: Verify supplied Windows icon resources
         shell: pwsh
@@ -83,37 +82,48 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # --- Metadata-only worker bundle (reproducible, no capture/input/network) ---
+      # --- Capture worker bundle (reproducible; no server credentials or input) ---
 
-      - name: Publish metadata-only CaptureWorker bundle
+      - name: Publish CaptureWorker bundle
         shell: pwsh
         run: |
           dotnet publish src/Helicoid.CaptureWorker/Helicoid.CaptureWorker.csproj `
             -c Release -r win-x64 --self-contained true `
             -p:ContinuousIntegrationBuild=true -p:Deterministic=true `
-            --nologo -o artifacts/metadata-worker
+            --nologo -o artifacts/capture-worker
 
-          # The worker is metadata-only: no pixels, input, or network admission.
-          # Prove the published binary contains no admitted capture surface.
-          $worker = "artifacts/metadata-worker/Helicoid.CaptureWorker.exe"
-          if (-not (Test-Path $worker)) { throw "metadata worker exe missing" }
+          # The per-user worker has one capture operation behind authenticated,
+          # fenced IPC. It receives no grant token, server credential, or input API.
+          $worker = "artifacts/capture-worker/Helicoid.CaptureWorker.exe"
+          if (-not (Test-Path $worker)) { throw "CaptureWorker exe missing" }
+          $depsPath = "artifacts/capture-worker/Helicoid.CaptureWorker.deps.json"
+          if (-not (Test-Path $depsPath)) { throw "CaptureWorker dependency manifest missing" }
+          $deps = Get-Content $depsPath -Raw | ConvertFrom-Json
+          $libraries = @($deps.libraries.PSObject.Properties.Name)
+          if (-not ($libraries | Where-Object { $_ -like "Helicoid.WorkerTransport/*" })) {
+            throw "CaptureWorker does not contain the isolated worker transport assembly"
+          }
+          if ($libraries | Where-Object { $_ -like "Helicoid.WindowsPlatform/*" }) {
+            throw "CaptureWorker must not carry the endpoint HTTP/WebRTC platform assembly"
+          }
+          Write-Host "CaptureWorker dependency boundary verified: isolated transport, no endpoint platform assembly"
 
           # Reproducibility manifest: sorted SHA-256 of every published file.
-          $files = Get-ChildItem "artifacts/metadata-worker" -Recurse -File | Sort-Object FullName
+          $files = Get-ChildItem "artifacts/capture-worker" -Recurse -File | Sort-Object FullName
           $lines = foreach ($f in $files) {
-            $rel = $f.FullName.Substring((Resolve-Path "artifacts/metadata-worker").Path.Length + 1)
+            $rel = $f.FullName.Substring((Resolve-Path "artifacts/capture-worker").Path.Length + 1)
             $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $rel"
           }
-          $lines | Set-Content -Path "artifacts/metadata-worker/SHA256SUMS" -Encoding ascii
-          Write-Host "Metadata worker bundle manifest:"
-          Get-Content "artifacts/metadata-worker/SHA256SUMS"
+          $lines | Set-Content -Path "artifacts/capture-worker/SHA256SUMS" -Encoding ascii
+          Write-Host "CaptureWorker bundle manifest:"
+          Get-Content "artifacts/capture-worker/SHA256SUMS"
 
-      - name: Upload metadata-only worker bundle
+      - name: Upload CaptureWorker bundle
         uses: actions/upload-artifact@v4
         with:
-          name: helicoid-windows-metadata-worker
-          path: artifacts/metadata-worker/
+          name: helicoid-windows-capture-worker
+          path: artifacts/capture-worker/
           if-no-files-found: error
           retention-days: 14
 
@@ -123,7 +133,7 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: |
-          $workerExe = "artifacts/metadata-worker/Helicoid.CaptureWorker.exe"
+          $workerExe = "artifacts/capture-worker/Helicoid.CaptureWorker.exe"
           if (-not (Test-Path $workerExe)) { throw "worker exe missing" }
 
           # 1. No env vars -> config error (exit 1). Mandatory fields deny.
@@ -294,12 +304,12 @@ jobs:
       - name: Verify CaptureWorker exists in Computer bundle
         shell: pwsh
         run: |
-          $workerPath = "artifacts/computer/Helicoid.CaptureWorker.exe"
+          $workerPath = "artifacts/computer/CaptureWorker/Helicoid.CaptureWorker.exe"
           if (-not (Test-Path $workerPath)) {
             Write-Error "CaptureWorker.exe not found in Computer bundle at $workerPath"
             exit 1
           }
-          Write-Host "CaptureWorker.exe found in Computer bundle"
+          Write-Host "CaptureWorker runtime bundle found beside Computer"
 
       - name: Build Windows-native integration tests
         timeout-minutes: 10
@@ -309,28 +319,18 @@ jobs:
         timeout-minutes: 15
         shell: pwsh
         run: |
-          # Stage the COMPLETE worker runtime bundle next to the test assembly.
-          # The apphost exe alone is not runnable: it needs its .dll,
-          # .deps.json, .runtimeconfig.json, and project-reference assemblies.
+          # Stage the complete worker runtime bundle in its own directory so
+          # its self-contained runtime files do not overwrite test-host files.
           $testBin = (Get-ChildItem -Path "src/Helicoid.WindowsIntegrationTests/bin/Release" -Recurse -Filter "Helicoid.WindowsIntegrationTests.dll" | Select-Object -First 1).DirectoryName
-          $workerOut = "src/Helicoid.CaptureWorker/bin/Release/net10.0"
+          $workerOut = "src/Helicoid.CaptureWorker/bin/Release/net10.0/win-x64"
           if (-not (Test-Path $workerOut)) { throw "CaptureWorker output dir missing: $workerOut" }
-
-          $required = @(
-            "Helicoid.CaptureWorker.exe",
-            "Helicoid.CaptureWorker.dll",
-            "Helicoid.CaptureWorker.deps.json",
-            "Helicoid.CaptureWorker.runtimeconfig.json",
-            "Helicoid.WindowsPlatform.dll",
-            "Helicoid.Domain.dll"
-          )
-          foreach ($name in $required) {
-            $src = Join-Path $workerOut $name
-            if (-not (Test-Path $src)) { throw "Required worker runtime file missing: $src" }
-            Copy-Item $src -Destination $testBin -Force
-            Write-Host "Staged $name"
+          $workerTestDir = Join-Path $testBin "CaptureWorker"
+          New-Item -ItemType Directory -Path $workerTestDir -Force | Out-Null
+          Copy-Item (Join-Path $workerOut "*") -Destination $workerTestDir -Recurse -Force
+          if (-not (Test-Path (Join-Path $workerTestDir "Helicoid.CaptureWorker.exe"))) {
+            throw "CaptureWorker apphost missing from staged runtime bundle"
           }
-          Write-Host "Complete worker runtime bundle staged into $testBin"
+          Write-Host "Complete self-contained worker bundle staged into $workerTestDir"
 
           # blame-hang isolates a hung test and dumps it instead of stalling
           # the job. Results and dumps are uploaded unconditionally below.
