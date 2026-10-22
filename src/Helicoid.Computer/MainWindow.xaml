@@ -25,6 +25,8 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
@@ -50,25 +52,74 @@
                 TextWrapping="Wrap"
                 Visibility="Collapsed" />
 
-            <Button
+            <TextBlock
                 Grid.Row="3"
-                x:Name="ViewDetailsButton"
-                HorizontalAlignment="Left"
-                Padding="8,4"
-                Click="ViewDetailsButton_Click"
-                AutomationProperties.Name="View Details">
-                <StackPanel Orientation="Horizontal" Spacing="8">
-                    <FontIcon
-                        x:Name="DetailsChevron"
-                        Glyph="&#xE70D;"
-                        FontSize="12"
-                        VerticalAlignment="Center" />
-                    <TextBlock x:Name="ViewDetailsLabel" Text="View Details" />
-                </StackPanel>
-            </Button>
+                x:Name="FileDeliveryText"
+                Text="File delivery is not configured."
+                Style="{StaticResource CaptionTextBlockStyle}"
+                TextWrapping="Wrap" />
+
+            <StackPanel Grid.Row="4" Orientation="Horizontal" Spacing="12">
+                <Button
+                    x:Name="EnrollEndpointButton"
+                    HorizontalAlignment="Left"
+                    Padding="8,4"
+                    Click="EnrollEndpointButton_Click"
+                    AutomationProperties.Name="Enroll this computer">
+                    <TextBlock Text="Enroll this computer" />
+                </Button>
+
+                <Button
+                    x:Name="ForgetEndpointIdentityButton"
+                    HorizontalAlignment="Left"
+                    Padding="8,4"
+                    Click="ForgetEndpointIdentityButton_Click"
+                    Visibility="Collapsed"
+                    AutomationProperties.Name="Forget saved endpoint identity">
+                    <TextBlock Text="Forget saved identity" />
+                </Button>
+
+                <Button
+                    x:Name="ViewDetailsButton"
+                    HorizontalAlignment="Left"
+                    Padding="8,4"
+                    Click="ViewDetailsButton_Click"
+                    AutomationProperties.Name="View Details">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon
+                            x:Name="DetailsChevron"
+                            Glyph="&#xE70D;"
+                            FontSize="12"
+                            VerticalAlignment="Center" />
+                        <TextBlock x:Name="ViewDetailsLabel" Text="View Details" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+
+            <StackPanel Grid.Row="5" Orientation="Horizontal" Spacing="8">
+                <Button
+                    x:Name="OpenReceivedFilesButton"
+                    HorizontalAlignment="Left"
+                    Padding="8,4"
+                    Click="OpenReceivedFilesButton_Click"
+                    Visibility="Collapsed"
+                    AutomationProperties.Name="Open received files">
+                    <TextBlock Text="Open Received Files" />
+                </Button>
+
+                <Button
+                    x:Name="ReviewFileRequestsButton"
+                    HorizontalAlignment="Left"
+                    Padding="8,4"
+                    Click="ReviewFileRequestsButton_Click"
+                    Visibility="Collapsed"
+                    AutomationProperties.Name="Review file requests">
+                    <TextBlock Text="Review File Requests" />
+                </Button>
+            </StackPanel>
 
             <ScrollViewer
-                Grid.Row="4"
+                Grid.Row="6"
                 x:Name="DetailsScroll"
                 Visibility="Collapsed"
                 VerticalScrollBarVisibility="Auto"

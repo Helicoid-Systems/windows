@@ -125,14 +125,16 @@ public sealed class PinnedHttpsTransport : IDisposable
     /// Bounded cancelable HTTPS request seam. Per-operation deadline covers
     /// connection, headers, and body. Redirects and non-2xx responses fail.
     /// An optional bearer token is attached as Authorization only; it is never
-    /// placed on the request target and never logged.
+    /// placed on the request target and never logged. An optional expected
+    /// status further narrows which successful response is accepted.
     /// </summary>
     public async Task<byte[]> SendAsync(
         HttpMethod method,
         string requestTarget,
         HttpContent? content,
         CancellationToken cancellationToken,
-        string? bearerToken = null)
+        string? bearerToken = null,
+        int? expectedStatusCode = null)
     {
         ArgumentNullException.ThrowIfNull(method);
 
@@ -199,12 +201,15 @@ public sealed class PinnedHttpsTransport : IDisposable
                             "Authentication challenges are refused for the deployment transport.");
                     }
 
-                    if (!response.IsSuccessStatusCode)
+                    if (!response.IsSuccessStatusCode ||
+                        (expectedStatusCode is int expected && (int)response.StatusCode != expected))
                     {
                         var status = (int)response.StatusCode;
                         throw new ServerClientException(
-                            MapStatus(status),
-                            "The deployment origin rejected the request.")
+                            response.IsSuccessStatusCode ? ServerClientFailure.InvalidResponse : MapStatus(status),
+                            response.IsSuccessStatusCode
+                                ? "The deployment origin returned an unexpected success status."
+                                : "The deployment origin rejected the request.")
                         {
                             HttpStatus = status,
                         };
@@ -216,7 +221,10 @@ public sealed class PinnedHttpsTransport : IDisposable
                     {
                         throw new ServerClientException(
                             ServerClientFailure.InvalidResponse,
-                            "The deployment origin response exceeded the size limit.");
+                            "The deployment origin response exceeded the size limit.")
+                        {
+                            HttpStatus = (int)response.StatusCode,
+                        };
                     }
 
                     return await ReadBoundedAsync(response, ct).ConfigureAwait(false);
@@ -467,7 +475,10 @@ public sealed class PinnedHttpsTransport : IDisposable
             {
                 throw new ServerClientException(
                     ServerClientFailure.InvalidResponse,
-                    "The deployment origin response exceeded the size limit.");
+                    "The deployment origin response exceeded the size limit.")
+                {
+                    HttpStatus = (int)response.StatusCode,
+                };
             }
 
             buffer.Write(chunk, 0, n);

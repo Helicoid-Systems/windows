@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using Helicoid.Domain.Worker;
 using Helicoid.WindowsPlatform;
 using Helicoid.WindowsPlatform.Native;
@@ -6,13 +7,18 @@ using Helicoid.WindowsPlatform.Native;
 namespace Helicoid.CaptureWorker;
 
 /// <summary>
-/// Helicoid CaptureWorker: metadata-only child worker process.
+/// Helicoid CaptureWorker: per-user desktop worker process.
 ///
-/// No pixels, input, or networking are enabled until a real admitted ABI exists.
-/// This worker connects to the supervisor via authenticated IPC with mutual
+/// It captures one bounded primary-display frame only for a fenced request from
+/// its authenticated Computer parent. The parent must issue that request only
+/// while a current server observation admission is redeemed. This process has
+/// no server credentials, networking, or input-injection path.
+///
+/// The worker connects to the supervisor via authenticated IPC with mutual
 /// kernel PID/session/SID identity, reads its per-launch capability and fencing
 /// IDs from private environment variables (immediately erased), and runs a
-/// bounded event loop reporting metadata status only.
+/// bounded event loop. Frame data moves through a one-request Local mapping;
+/// every request and response is bound to the current desktop-generation fence.
 ///
 /// Boot ID, launch ID, desktop generation, and session/user identity are
 /// mandatory on both sides. Malformed or missing fields deny the connection —
@@ -128,8 +134,9 @@ internal static class Program
             return ExitAuthFailed;
         }
 
-        // Run the metadata-only event loop.
-        // No pixels, input, or networking — this is a diagnostic skeleton.
+        // Run the fenced desktop-worker event loop. It can return only a
+        // bounded capture frame requested over this authenticated channel.
+        // It has no server credentials, networking, or input-injection path.
         int loopResult;
         try
         {
@@ -266,11 +273,11 @@ internal static class Program
         out int returnLength);
 
     /// <summary>
-    /// Metadata-only event loop. Listens for supervisor messages (heartbeat,
-    /// work assignment, shutdown) and responds. Every post-handshake message
-    /// must carry a matching fence stamp. Unknown types, unknown operations,
-    /// and fence mismatches fail closed. No capture, pixels, input, or
-    /// networking occurs here.
+    /// Listens for supervisor messages (heartbeat, work assignment, shutdown)
+    /// and responds. Every post-handshake message must carry a matching fence
+    /// stamp. A capture assignment writes at most one bounded primary-display
+    /// frame into its supplied private mapping. Unknown operations and fence
+    /// mismatches fail closed; input and networking are not worker operations.
     /// </summary>
     private static int RunEventLoop(
         WorkerIpcChannel channel,
@@ -297,65 +304,89 @@ internal static class Program
             // Reset heartbeat timer on any message from supervisor.
             heartbeatTimer.Restart();
 
-            switch (message.Type)
+            try
             {
-                case IpcMessageType.HeartbeatPing:
-                    // Heartbeat carries a bare fence stamp — must match.
-                    if (!FenceStamp.TryDeserialize(message.Payload, out var pingStamp) || !pingStamp.Matches(ownStamp))
-                    {
-                        return ExitProtocolViolation;
-                    }
-
-                    if (!channel.TrySendMessage(new IpcMessage
-                    {
-                        Type = IpcMessageType.HeartbeatPong,
-                        Payload = ownStamp.Serialize(),
-                    }))
-                    {
-                        return ExitDisconnected;
-                    }
-                    break;
-
-                case IpcMessageType.WorkAssignment:
-                    // Metadata-only: known operations only; unknown ops and
-                    // fence mismatches fail closed.
-                    if (!WorkAssignmentPayload.TryDeserialize(message.Payload, out var assignment)
-                        || !assignment.Fence.Matches(ownStamp))
-                    {
-                        return ExitProtocolViolation;
-                    }
-
-                    if (assignment.Operation != WorkOperationCode.MetadataStatusQuery)
-                    {
-                        return ExitProtocolViolation;
-                    }
-
-                    if (!channel.TrySendMessage(new IpcMessage
-                    {
-                        Type = IpcMessageType.WorkAck,
-                        Payload = new WorkAckPayload
+                switch (message.Type)
+                {
+                    case IpcMessageType.HeartbeatPing:
+                        if (!FenceStamp.TryDeserialize(message.Payload, out var pingStamp) ||
+                            !pingStamp.Matches(ownStamp))
                         {
-                            Fence = ownStamp,
-                            Operation = assignment.Operation,
-                        }.Serialize(),
-                    }))
-                    {
-                        return ExitDisconnected;
-                    }
-                    break;
+                            return ExitProtocolViolation;
+                        }
 
-                case IpcMessageType.Shutdown:
-                    // Shutdown carries a bare fence stamp — must match.
-                    if (!FenceStamp.TryDeserialize(message.Payload, out var shutdownStamp) || !shutdownStamp.Matches(ownStamp))
-                    {
+                        if (!channel.TrySendMessage(new IpcMessage
+                        {
+                            Type = IpcMessageType.HeartbeatPong,
+                            Payload = ownStamp.Serialize(),
+                        }))
+                        {
+                            return ExitDisconnected;
+                        }
+                        break;
+
+                    case IpcMessageType.WorkAssignment:
+                        if (!WorkAssignmentPayload.TryDeserialize(message.Payload, out var assignment) ||
+                            !assignment.Fence.Matches(ownStamp))
+                        {
+                            return ExitProtocolViolation;
+                        }
+
+                        try
+                        {
+                            bool accepted = assignment.Operation switch
+                            {
+                                WorkOperationCode.MetadataStatusQuery => assignment.Body is null,
+                                WorkOperationCode.CapturePrimaryDisplay =>
+                                    ObservationFrameSlot.TryCaptureToRequest(assignment.Body, ownStamp.Generation),
+                                _ => false,
+                            };
+                            if (!accepted)
+                            {
+                                return ExitProtocolViolation;
+                            }
+
+                            if (!channel.TrySendMessage(new IpcMessage
+                            {
+                                Type = IpcMessageType.WorkAck,
+                                Payload = new WorkAckPayload
+                                {
+                                    Fence = ownStamp,
+                                    Operation = assignment.Operation,
+                                }.Serialize(),
+                            }))
+                            {
+                                return ExitDisconnected;
+                            }
+                        }
+                        finally
+                        {
+                            if (assignment.Body is not null)
+                            {
+                                CryptographicOperations.ZeroMemory(assignment.Body);
+                            }
+                        }
+                        break;
+
+                    case IpcMessageType.Shutdown:
+                        if (!FenceStamp.TryDeserialize(message.Payload, out var shutdownStamp) ||
+                            !shutdownStamp.Matches(ownStamp))
+                        {
+                            return ExitProtocolViolation;
+                        }
+
+                        return ExitClean;
+
+                    default:
                         return ExitProtocolViolation;
-                    }
-
-                    return ExitClean;
-
-                default:
-                    // Unknown message type — fail closed.
-                    return ExitProtocolViolation;
+                }
+            }
+            finally
+            {
+                if (message.Payload is not null)
+                {
+                    CryptographicOperations.ZeroMemory(message.Payload);
+                }
             }
         }
 

@@ -7,5 +7,6 @@
     <Project Path="src/Helicoid.Domain/Helicoid.Domain.csproj" />
     <Project Path="src/Helicoid.Manager/Helicoid.Manager.csproj" />
     <Project Path="src/Helicoid.WindowsPlatform/Helicoid.WindowsPlatform.csproj" />
+    <Project Path="src/Helicoid.WorkerTransport/Helicoid.WorkerTransport.csproj" />
   </Folder>
 </Solution>

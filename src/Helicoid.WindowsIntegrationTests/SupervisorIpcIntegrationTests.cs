@@ -25,7 +25,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
     {
         // Locate the CaptureWorker executable relative to the test assembly.
         string testDir = AppContext.BaseDirectory;
-        _workerExePath = Path.Combine(testDir, "Helicoid.CaptureWorker.exe");
+        _workerExePath = Path.Combine(testDir, "CaptureWorker", "Helicoid.CaptureWorker.exe");
     }
 
     public void Dispose()

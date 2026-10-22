@@ -22,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
     <ProjectReference Include="..\Helicoid.WindowsPlatform\Helicoid.WindowsPlatform.csproj" />
+    <ProjectReference Include="..\Helicoid.WorkerTransport\Helicoid.WorkerTransport.csproj" />
   </ItemGroup>
 
   <!-- Framework-independent manager view-model sources under test (not a facade). -->

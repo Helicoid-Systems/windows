@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
+    <ProjectReference Include="..\Helicoid.WorkerTransport\Helicoid.WorkerTransport.csproj" />
     <ProjectReference Include="..\Helicoid.WindowsPlatform\Helicoid.WindowsPlatform.csproj" />
     <ProjectReference Include="..\Helicoid.CaptureWorker\Helicoid.CaptureWorker.csproj" />
   </ItemGroup>

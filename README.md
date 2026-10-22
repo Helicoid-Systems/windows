@@ -39,6 +39,12 @@ Computers first: inclusion, preview grid, and selected-or-displayed actions, wit
 
 The 20 October native UI checkpoint adds automatic session-bound inventory loading, stable Grid/List selection, four preview-size presets, a complete Computers panel, and independent view-only windows with revocation cleanup. Computer status is compact and reflects actual supervisor metadata. Unsupported installation and remote-engine actions remain unavailable. The coordinator reproduced 496 portable tests; native WinUI build and installed visual acceptance are separate checks.
 
+A later source-only continuation adds a grant-bound Windows Computer observation peer and bounded GDI primary-display capture, plus the shared Qt Manager signaling and frame-receive path. Native observation capability bits remain disabled and the Windows native DLL is absent from this checkout, so the source does not provide an active preview in a packaged build. This work has no Windows compile or installed runtime acceptance yet.
+
+The Windows Computer status window can redeem a Manager endpoint invitation from **Enroll this computer**. It requires the server HTTPS origin, deployment ID, invitation ID and one-time code, plus the deployment CA certificate and its SHA-256 fingerprint obtained through the organization's trusted setup channel. The client pins that CA and origin for the request, stores the Ed25519 endpoint identity with current-user DPAPI, and saves the accepted enrollment receipt and pinned transport trust as DPAPI-protected metadata. One Windows Computer installation keeps one endpoint identity bound to its accepted deployment. The receipt means the invitation was accepted at that time; it does not report current approval, capture, observation, or input authority. Before endpoint authentication, the client checks `/health` and stops unless `features.file_jobs=true`; the current server source advertises `true`. The source receiver binds its signed endpoint session to the current process SID and signs the OS account label only while that process is in the active physical-console session, then rechecks the SID and session before each chunk and local commit. The server binds new targets to that SID. On a detected console-user change, the client uses an unbound session proof to revoke the previous file session when its protected identity is available; that session cannot lease files. Files publish without overwriting into the per-user `LocalAppData/Helicoid/Computer/Received Files` folder. The Manager preflights a fresh endpoint session and confirms the named account and computer; job creation is bound to that exact session ID. It polls every two minutes when enabled. D29 now has a source-level identity, pause, and unbound-session update path, but this source implementation has not yet been built or exercised on Windows, and V48 acceptance remains outstanding. The endpoint enrollment and file-session proof formats follow `../../modules/server/contracts/http-v2.md`.
+
+The enrolled Computer status window also has an explicit **Review File Requests** action. It lists only requests assigned to that computer, shows instructions and limits, displays the signed current user's submission history, and opens the native multi-file picker. Selected files are opened through handles that reject reparse points and directories, bounded to the request's count and 128 MiB total, and hashed before their manifest is reserved. Upload uses 256 KiB chunks, validates each returned chunk receipt, checks the complete upload digest, and requires a verified `received` response. A replacement requires selecting an exact received submission ID and confirming the replacement in a second dialog. Windows source is not built or exercised in this environment; this is source coverage only.
+
 <br>
 
 </td>
@@ -137,9 +143,9 @@ skips are not native proof.
 
 Native CI is bounded: job/step `timeout-minutes`, `dotnet test --blame-hang
 --blame-hang-timeout 5m`, and `if: always()` upload of TRX results and dumps.
-The complete CaptureWorker runtime bundle (exe + dll + deps.json +
-runtimeconfig.json + project-reference assemblies) is staged beside the test
-assembly — the apphost exe alone is not runnable.
+The complete self-contained CaptureWorker runtime bundle is staged in a
+`CaptureWorker` subdirectory beside the test assembly so its runtime files do
+not overwrite the test host's files.
 
 ### Full Windows apps (Windows 11 x64)
 
@@ -150,9 +156,12 @@ dotnet test src/Helicoid.Domain.Tests/Helicoid.Domain.Tests.csproj -c Release --
 dotnet test src/Helicoid.WindowsIntegrationTests/Helicoid.WindowsIntegrationTests.csproj -c Release --nologo
 ```
 
-Native Windows CI (`.github/workflows/windows.yml`) also publishes a
-reproducible metadata-only CaptureWorker bundle (`SHA256SUMS` manifest) and
-runs worker IPC admission checks (missing/malformed fencing env → exit 1).
+Native Windows CI (`.github/workflows/windows.yml`) publishes a reproducible,
+self-contained CaptureWorker bundle (`SHA256SUMS` manifest). The worker can
+capture one bounded primary-display frame only after an authenticated,
+generation-fenced IPC request from the Computer process; it has no server
+credentials or input operation. CI also checks fail-closed worker startup when
+mandatory environment and fencing fields are missing or malformed.
 
 ### Development evidence status
 

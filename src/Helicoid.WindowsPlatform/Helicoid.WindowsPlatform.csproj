@@ -16,6 +16,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
+    <ProjectReference Include="..\Helicoid.WorkerTransport\Helicoid.WorkerTransport.csproj" />
+    <Compile Include="..\..\..\..\modules\core\webrtc-native\native\wrappers\HsWebRtcWrapper.cs"
+             Link="Native\HsWebRtcWrapper.cs" />
   </ItemGroup>
 
   <ItemGroup>

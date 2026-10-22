@@ -137,13 +137,17 @@ public enum IpcMessageType : byte
 }
 
 /// <summary>
-/// Post-handshake operation codes. Unknown codes fail closed; capture, input,
-/// and network operations are intentionally absent until an admitted ABI exists.
+/// Post-handshake operation codes. Every operation is bound to the authenticated
+/// worker launch and its current desktop-generation fence. The parent may issue
+/// capture only after it has redeemed the server observation admission.
 /// </summary>
 public enum WorkOperationCode : byte
 {
     /// <summary>Metadata-only status query. No pixels, input, or network.</summary>
     MetadataStatusQuery = 1,
+
+    /// <summary>Capture one bounded primary-display frame into the assigned local slot.</summary>
+    CapturePrimaryDisplay = 2,
 }
 
 /// <summary>

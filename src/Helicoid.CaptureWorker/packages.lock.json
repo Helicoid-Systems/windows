@@ -21,7 +21,7 @@
           "NSec.Cryptography": "[26.4.0, )"
         }
       },
-      "helicoid.windowsplatform": {
+      "helicoid.workertransport": {
         "type": "Project",
         "dependencies": {
           "Helicoid.Domain": "[1.0.0, )"

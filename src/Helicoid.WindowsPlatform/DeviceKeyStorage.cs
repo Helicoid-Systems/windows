@@ -1084,9 +1084,8 @@ public sealed class DeviceKeyStorage : IDisposable
     }
 
     /// <summary>
-    /// TEST seam: pin a product directory and its ancestors with the same
-    /// ownership/reparse/no-share-delete rules used by create/open. Used to
-    /// assert replacement is blocked while held. Not a production override.
+    /// Pin a private directory and its ancestors with the same
+    /// ownership/reparse/no-share-delete rules used by create/open.
     /// </summary>
     internal static DeviceKeyStorageResult TryPinDirectory(string directory, out IDisposable? pin)
     {
