@@ -76,8 +76,24 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
             session = 0;
         }
 
-        string sid = GetCurrentProcessTokenSid() ?? "S-1-5-18";
+        string sid = GetCurrentProcessTokenSid()
+            ?? throw new InvalidOperationException(
+                "Kernel-backed current-process token SID could not be read; refusing to substitute a placeholder identity.");
         return (session, sid);
+    }
+
+    /// <summary>
+    /// Write a raw frame with a hard bound. A server that rejects identity
+    /// before reading must surface as a failed assertion, never as a hung test.
+    /// </summary>
+    private static async Task WriteRawFrameAsync(
+        NamedPipeClientStream client,
+        byte[] frame,
+        TimeSpan timeout)
+    {
+        using var writeTimeout = new CancellationTokenSource(timeout);
+        await client.WriteAsync(frame, writeTimeout.Token).ConfigureAwait(false);
+        await client.FlushAsync(writeTimeout.Token).ConfigureAwait(false);
     }
 
     private static SupervisorIpcChannel CreateChannel(
@@ -105,7 +121,9 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
     {
         uint pid = serverPid ?? Kernel32Native.GetCurrentProcessId();
         WtsNative.ProcessIdToSessionId(pid, out uint session);
-        string sid = GetCurrentProcessTokenSid() ?? "S-1-5-18";
+        string sid = GetCurrentProcessTokenSid()
+            ?? throw new InvalidOperationException(
+                "Kernel-backed current-process token SID could not be read; refusing to substitute a placeholder identity.");
         return new WorkerIpcChannel(pipeName, capability, pid, session, sid, fence ?? MakeFence(), generation);
     }
 
@@ -134,6 +152,26 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
 
         var workerResult = await AwaitBoundedAsync(workerTask, TimeSpan.FromSeconds(15));
         Assert.Equal(IpcAuthenticationResult.Authenticated, workerResult);
+    }
+
+    // =================================================================
+    // Test 1b: Kernel token-SID read must succeed for our own process.
+    // A null SID silently turns every handshake into TokenMismatch.
+    // =================================================================
+
+    [WindowsFact]
+    public void KernelIdentity_CurrentProcessTokenSid_IsReadable()
+    {
+        uint pid = Kernel32Native.GetCurrentProcessId();
+
+        string? sid = KernelIdentity.ReadProcessTokenSid(pid);
+        Assert.False(
+            string.IsNullOrEmpty(sid),
+            "KernelIdentity.ReadProcessTokenSid must read the current process token SID; null denies every handshake.");
+        Assert.True(
+            HandshakeRequestPayload.TryValidateTokenSid(sid, out _),
+            $"Current process token SID must be well-formed, got '{sid}'.");
+        Assert.Equal(sid, KernelIdentity.ReadProcessTokenSid(pid));
     }
 
     // =================================================================
@@ -235,9 +273,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         byte[] garbage = new byte[IpcMessage.HeaderSize];
         garbage[0] = (byte)IpcMessageType.HandshakeRequest;
         BitConverter.TryWriteBytes(garbage.AsSpan(1, 4), 999); // Claims 999 bytes but frame is only 5.
-        using var writeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-        await rawClient.WriteAsync(garbage, writeTimeout.Token);
-        await rawClient.FlushAsync(writeTimeout.Token);
+        await WriteRawFrameAsync(rawClient, garbage, TimeSpan.FromSeconds(10));
 
         var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
         // Should be either MalformedFrame or Timeout (depending on read behavior).
@@ -998,8 +1034,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         byte[] frame = new byte[IpcMessage.HeaderSize];
         frame[0] = (byte)IpcMessageType.HandshakeRequest;
         BitConverter.TryWriteBytes(frame.AsSpan(1, 4), IpcMessage.MaxPayloadSize + 1);
-        await rawClient.WriteAsync(frame);
-        await rawClient.FlushAsync();
+        await WriteRawFrameAsync(rawClient, frame, TimeSpan.FromSeconds(10));
 
         var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
         Assert.NotEqual(IpcAuthenticationResult.Authenticated, result);
@@ -1024,8 +1059,10 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         {
             await rawClient.ConnectAsync(2000);
             // Send a partial header then drop the connection.
-            await rawClient.WriteAsync(new byte[] { (byte)IpcMessageType.HandshakeRequest, 1, 0, 0, 0 });
-            await rawClient.FlushAsync();
+            await WriteRawFrameAsync(
+                rawClient,
+                new byte[] { (byte)IpcMessageType.HandshakeRequest, 1, 0, 0, 0 },
+                TimeSpan.FromSeconds(10));
         }
 
         var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
@@ -1228,7 +1265,9 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         var fence = MakeFence();
         uint pid = Kernel32Native.GetCurrentProcessId();
         WtsNative.ProcessIdToSessionId(pid, out uint session);
-        string sid = GetCurrentProcessTokenSid() ?? "S-1-5-18";
+        string sid = GetCurrentProcessTokenSid()
+            ?? throw new InvalidOperationException(
+                "Kernel-backed current-process token SID could not be read; refusing to substitute a placeholder identity.");
 
         // Pipe name that no server will create — connect pends.
         var worker = new WorkerIpcChannel(

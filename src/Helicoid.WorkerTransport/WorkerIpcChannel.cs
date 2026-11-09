@@ -420,12 +420,20 @@ public sealed class WorkerIpcChannel : IDisposable
 /// </summary>
 public static class KernelIdentity
 {
+    /// <summary>Upper bound on a TOKEN_USER buffer; refuses absurd probe sizes.</summary>
+    private const int MaxTokenUserBytes = 256;
+
     /// <summary>
     /// Convert an already-open token into its validated user SID.
     /// </summary>
     public static string? GetTokenUserSid(IntPtr tokenHandle)
     {
-        if (!PipeNative.GetTokenInformation(tokenHandle, PipeNative.TokenUser, IntPtr.Zero, 0, out int needed) || needed <= 0)
+        // Size probe: GetTokenInformation is expected to fail with
+        // ERROR_INSUFFICIENT_BUFFER while reporting the required size. A
+        // failed probe that reports no usable size means identity cannot be
+        // established, so callers must deny.
+        _ = PipeNative.GetTokenInformation(tokenHandle, PipeNative.TokenUser, IntPtr.Zero, 0, out int needed);
+        if (needed <= 0 || needed > MaxTokenUserBytes)
         {
             return null;
         }
