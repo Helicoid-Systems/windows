@@ -225,19 +225,19 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
 
         using var channel = CreateChannel(capability, expectedPid: selfPid);
 
-        var handshakeTask = Task.Run(() =>
-            channel.WaitForAuthenticatedConnection(TimeSpan.FromSeconds(10)));
+        var handshakeTask = channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(10));
 
         // Connect as a raw pipe client and send malformed data.
-        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await rawClient.ConnectAsync(5000);
 
         // Send garbage: valid header type but wrong payload size.
         byte[] garbage = new byte[IpcMessage.HeaderSize];
         garbage[0] = (byte)IpcMessageType.HandshakeRequest;
         BitConverter.TryWriteBytes(garbage.AsSpan(1, 4), 999); // Claims 999 bytes but frame is only 5.
-        await rawClient.WriteAsync(garbage);
-        await rawClient.FlushAsync();
+        using var writeTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        await rawClient.WriteAsync(garbage, writeTimeout.Token);
+        await rawClient.FlushAsync(writeTimeout.Token);
 
         var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
         // Should be either MalformedFrame or Timeout (depending on read behavior).
@@ -261,7 +261,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
             channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(2)));
 
         // Connect but send nothing.
-        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await rawClient.ConnectAsync(5000);
 
         // Don't send anything — let it timeout.
@@ -970,7 +970,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         var handshakeTask = Task.Run(() =>
             channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(1)));
 
-        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await rawClient.ConnectAsync(2000);
 
         var result = await AwaitBoundedAsync(handshakeTask, TimeSpan.FromSeconds(15));
@@ -992,7 +992,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         var handshakeTask = Task.Run(() =>
             channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(2)));
 
-        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await rawClient.ConnectAsync(2000);
 
         byte[] frame = new byte[IpcMessage.HeaderSize];
@@ -1020,7 +1020,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         var handshakeTask = Task.Run(() =>
             channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(3)));
 
-        using (var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut))
+        using (var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
         {
             await rawClient.ConnectAsync(2000);
             // Send a partial header then drop the connection.
@@ -1183,7 +1183,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         var handshakeTask = Task.Run(() =>
             channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(2)));
 
-        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut);
+        using var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         await rawClient.ConnectAsync(2000);
 
         // Complete the handshake from the raw side so the server marks us
@@ -1255,7 +1255,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         var handshakeTask = Task.Run(() =>
             channel.WaitForAuthenticatedConnectionAsync(TimeSpan.FromSeconds(3)));
 
-        using (var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut))
+        using (var rawClient = new NamedPipeClientStream(".", channel.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
         {
             await rawClient.ConnectAsync(2000);
         } // Disconnect immediately without sending.
@@ -1294,7 +1294,7 @@ public sealed class SupervisorIpcIntegrationTests : IDisposable
         await Task.Delay(200);
 
         // A real raw client connects — proves the first server is actually bound.
-        using (var rawClient = new NamedPipeClientStream(".", first.PipeName, PipeDirection.InOut))
+        using (var rawClient = new NamedPipeClientStream(".", first.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
         {
             await rawClient.ConnectAsync(2000);
 
