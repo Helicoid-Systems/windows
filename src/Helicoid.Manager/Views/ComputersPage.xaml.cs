@@ -136,6 +136,12 @@ public sealed partial class ComputersPage : Page
             ViewModel.IsGridView ? "GridTileTemplate" : "ListRowTemplate"];
         InventoryHost.ItemsPanel = (ItemsPanelTemplate)Resources[
             ViewModel.IsGridView ? "WrapPanel" : "StackPanel"];
+
+        // The visible label names the layout currently in use. The accessible
+        // name stays "Grid view" so the toggle's checked state means on/off;
+        // renaming it "List view" while unchecked would read as "List view, off"
+        // even though the list layout is active.
+        GridListToggle.Label = ViewModel.IsGridView ? "Grid" : "List";
     }
 
     private void RefreshScope()
@@ -145,15 +151,23 @@ public sealed partial class ComputersPage : Page
             return;
         }
 
+        var refreshingText = "Refreshing computers";
         ScopeLine.Text = ViewModel.ScopeLine;
-        InventoryStatus.Text = ViewModel.IsInventoryLoading
-            ? "Connecting to Server" : ViewModel.InventoryLoadError ?? string.Empty;
-        InventoryStatus.Visibility = string.IsNullOrEmpty(InventoryStatus.Text) ? Visibility.Collapsed : Visibility.Visible;
         var empty = ViewModel.Tiles.Count == 0;
+        var emptyKind = ViewModel.EmptyKind;
+        // The default empty state already carries the load status. Do not
+        // repeat the same sentence in the status line above it.
+        var emptyStateCarriesStatus = empty
+            && emptyKind is not (InventoryEmptyKind.NoInclusion or InventoryEmptyKind.NoMatches);
+        InventoryStatus.Text = ViewModel.IsInventoryLoading
+            ? refreshingText : ViewModel.InventoryLoadError ?? string.Empty;
+        InventoryStatus.Visibility = emptyStateCarriesStatus || string.IsNullOrEmpty(InventoryStatus.Text)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
         EmptyState.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
         if (empty)
         {
-            switch (ViewModel.EmptyKind)
+            switch (emptyKind)
             {
                 case InventoryEmptyKind.NoInclusion:
                     EmptyStateTitle.Text = "No computers are included";
@@ -164,7 +178,7 @@ public sealed partial class ComputersPage : Page
                     EmptyStateDetail.Text = "Clear Filters or change the search to see included computers.";
                     break;
                 default:
-                    EmptyStateTitle.Text = ViewModel.IsInventoryLoading ? "Connecting to Server"
+                    EmptyStateTitle.Text = ViewModel.IsInventoryLoading ? refreshingText
                         : ViewModel.InventoryLoadError is not null ? "Computers Unavailable" : "No Computers";
                     EmptyStateDetail.Text = ViewModel.IsInventoryLoading ? string.Empty
                         : ViewModel.InventoryLoadError ?? "No computers are authorized for this account.";

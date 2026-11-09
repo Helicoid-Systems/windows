@@ -65,7 +65,7 @@ public sealed partial class ConnectionPage : Page
         var awaitingCode = vm.State == ConnectionUiState.AwaitingTotp && vm.RequiresTotp;
         var signingIn = vm.State == ConnectionUiState.SigningIn;
         TaskTitle.Text = awaitingCode ? "Verification Code" : closed ? "Connect to Server" : "Sign In";
-        StatusText.Text = closed ? "Connecting requires a verified connection profile." : vm.StatusMessage.TrimEnd('…');
+        StatusText.Text = closed ? "Connecting requires a verified connection profile." : vm.StatusMessage;
         DetailText.Text = vm.DetailMessage;
         Details.Visibility = string.IsNullOrWhiteSpace(vm.DetailMessage) ? Visibility.Collapsed : Visibility.Visible;
         CredentialFields.Visibility = closed || signedIn || awaitingCode ? Visibility.Collapsed : Visibility.Visible;

@@ -79,8 +79,8 @@ public sealed class AgentStatusViewModel : INotifyPropertyChanged
     {
         AgentConnectionState.NotEnrolled => "Not enrolled",
         AgentConnectionState.PendingApproval when _enrollmentComputerId is not null =>
-            $"Enrollment submitted for administrator approval · {_enrollmentComputerId}",
-        AgentConnectionState.PendingApproval => "Enrollment submitted for administrator approval",
+            $"Waiting for administrator approval: {_enrollmentComputerId}",
+        AgentConnectionState.PendingApproval => "Waiting for administrator approval",
         AgentConnectionState.Connected => "Connected to Helicoid server",
         AgentConnectionState.Disconnected => "Disconnected from Helicoid server",
         // Windows wording only. No invented OS permission name; real cause

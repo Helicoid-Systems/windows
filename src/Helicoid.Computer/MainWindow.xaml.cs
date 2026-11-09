@@ -251,7 +251,7 @@ public sealed partial class MainWindow : Window
         OpenReceivedFilesButton.IsEnabled = true;
         OpenReceivedFilesButton.Visibility = Visibility.Visible;
         ReviewFileRequestsButton.Visibility = Visibility.Visible;
-        FileDeliveryText.Text = "Checking for approved file jobs…";
+        FileDeliveryText.Text = "Checking for approved file jobs.";
         _fileDeliveryTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(2) };
         _fileDeliveryTimer.Tick += OnFileDeliveryTimerTick;
         _fileDeliveryTimer.Start();
@@ -682,7 +682,7 @@ public sealed partial class MainWindow : Window
             var history = await client.ListMyFileRequestSubmissionsAsync(request.Id, CancellationToken.None);
             var recentHistory = history.Take(8).Select(submission =>
                 $"{submission.State}: {string.Join(", ", submission.Files.Take(3).Select(file => file.FileName))}" +
-                (submission.Files.Count > 3 ? "…" : string.Empty));
+                (submission.Files.Count > 3 ? ", and more" : string.Empty));
             var historyText = history.Count == 0
                 ? "You have no previous submissions for this request."
                 : $"Your previous submissions:\n{string.Join("\n", recentHistory)}";
@@ -790,7 +790,7 @@ public sealed partial class MainWindow : Window
                 }
             }
 
-            FileDeliveryText.Text = "Uploading the selected files…";
+            FileDeliveryText.Text = "Uploading the selected files.";
             var result = await client.SubmitFilesToRequestAsync(
                 request.Id,
                 request.Revision,

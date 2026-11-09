@@ -12,8 +12,9 @@
                 Width="{x:Bind PreviewExtent, Mode=OneWay}">
                 <Border
                     Height="{x:Bind PreviewHeight, Mode=OneWay}"
-                    Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                    CornerRadius="4">
+                    Background="Transparent"
+                    BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                    BorderThickness="1">
                     <StackPanel VerticalAlignment="Center" Spacing="2" Padding="8">
                         <TextBlock
                             Text="{x:Bind PreviewTitle}"
@@ -101,7 +102,7 @@
         </Grid.RowDefinitions>
 
         <CommandBar Grid.Row="0" DefaultLabelPosition="Right" IsDynamicOverflowEnabled="True">
-            <AppBarToggleButton x:Name="GridListToggle" Icon="ViewAll" Label="Grid" IsChecked="True" Checked="GridListToggle_Checked" Unchecked="GridListToggle_Unchecked" />
+            <AppBarToggleButton x:Name="GridListToggle" Icon="ViewAll" Label="Grid" AutomationProperties.Name="Grid view" IsChecked="True" Checked="GridListToggle_Checked" Unchecked="GridListToggle_Unchecked" />
             <AppBarButton Icon="Zoom" Label="Preview Size">
                 <AppBarButton.Flyout>
                     <MenuFlyout>
@@ -115,7 +116,7 @@
             <AppBarButton x:Name="PauseResumeButton" Icon="Pause" Label="Pause Monitoring" Click="PauseResume_Click" />
             <AppBarButton Icon="Refresh" Label="Refresh" Click="Refresh_Click" />
             <AppBarButton Icon="Clear" Label="Clear Filters" Click="ClearFilters_Click" />
-            <AppBarToggleButton x:Name="PanelToggle" Icon="People" Label="Computers Panel" Checked="PanelToggle_Checked" Unchecked="PanelToggle_Unchecked" />
+            <AppBarToggleButton x:Name="PanelToggle" Icon="People" Label="Choose Computers" Checked="PanelToggle_Checked" Unchecked="PanelToggle_Unchecked" />
             <AppBarButton Icon="Clear" Label="Clear Selection" Click="ClearSelection_Click" />
         </CommandBar>
 
@@ -135,6 +136,7 @@
                 x:Name="StatusFilterBox"
                 MinWidth="140"
                 HorizontalAlignment="Right"
+                AutomationProperties.Name="Status filter"
                 SelectionChanged="StatusFilterBox_SelectionChanged">
                 <ComboBoxItem Content="All" IsSelected="True" />
                 <ComboBoxItem Content="Online" />

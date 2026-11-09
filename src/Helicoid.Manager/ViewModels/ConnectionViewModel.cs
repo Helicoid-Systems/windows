@@ -250,7 +250,7 @@ public sealed class ConnectionViewModel : INotifyPropertyChanged, IDisposable
         }
 
         State = ConnectionUiState.SigningIn;
-        StatusMessage = "Signing in…";
+        StatusMessage = "Signing in.";
         DetailMessage = string.Empty;
 
         try

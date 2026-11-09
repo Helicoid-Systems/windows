@@ -920,10 +920,8 @@ public sealed class ComputerTile : INotifyPropertyChanged
         ComputerStatus.Online => "Not live. Remote engine is not available in this build.",
         ComputerStatus.Connecting => "Connecting. Remote engine is not available in this build.",
         ComputerStatus.Offline => "Offline. Remote engine is not available in this build.",
-        ComputerStatus.NeedsAttention => "Needs attention. Remote engine is not available in this build.",
-        ComputerStatus.PendingApproval => "Pending approval. Remote engine is not available in this build.",
-        ComputerStatus.Failed => "Connection failed. Remote engine is not available in this build.",
-        ComputerStatus.Unavailable => "Unavailable. Remote engine is not available in this build.",
+        // Exceptional states already render their status in ExceptionText;
+        // repeating it here would show the same line twice in the tile.
         _ => "Remote engine is not available in this build.",
     };
 
