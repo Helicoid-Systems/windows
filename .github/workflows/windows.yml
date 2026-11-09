@@ -31,10 +31,20 @@ jobs:
     runs-on: windows-latest
     # Hard job bound so a hung native test cannot stall the run indefinitely.
     timeout-minutes: 45
+    env:
+      HelicoidCoreRoot: ${{ github.workspace }}\modules\core
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Checkout pinned core source
+        uses: actions/checkout@v7
+        with:
+          repository: Helicoid-Systems/core
+          ref: 5d3f98eaad86330010e1bdaf4731189b286e0dbe
+          path: modules/core
+          persist-credentials: false
 
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v6

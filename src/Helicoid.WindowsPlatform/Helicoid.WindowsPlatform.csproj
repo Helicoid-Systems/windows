@@ -12,12 +12,13 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <!-- Reusable Windows platform module for native observer and IPC. -->
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <HelicoidCoreRoot Condition="'$(HelicoidCoreRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\..\modules\core</HelicoidCoreRoot>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Helicoid.Domain\Helicoid.Domain.csproj" />
     <ProjectReference Include="..\Helicoid.WorkerTransport\Helicoid.WorkerTransport.csproj" />
-    <Compile Include="..\..\..\..\modules\core\webrtc-native\native\wrappers\HsWebRtcWrapper.cs"
+    <Compile Include="$(HelicoidCoreRoot)\webrtc-native\native\wrappers\HsWebRtcWrapper.cs"
              Link="Native\HsWebRtcWrapper.cs" />
   </ItemGroup>
 
