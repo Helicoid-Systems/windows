@@ -20,7 +20,19 @@ public sealed record ObservationAdmissionEndpoint(
     string EndpointSessionId,
     long EnrollmentEpoch);
 
-/// <summary>A verified, endpoint-bound observation grant.</summary>
+/// <summary>
+/// Manager session identity a server-signed observation grant must match.
+/// Endpoint key, session, and enrollment epoch are deliberately not inputs:
+/// the Manager trusts them only from the signed grant claims.
+/// </summary>
+public sealed record ObservationAdmissionManager(
+    string DeploymentId,
+    string AccountId,
+    string ComputerId,
+    string ManagerId,
+    string ManagerPublicKeyHex);
+
+/// <summary>A verified observation admission grant with signed endpoint and Manager claims.</summary>
 public sealed class VerifiedObservationAdmissionGrant
 {
     private readonly string _managerPublicKeyHex;
@@ -262,6 +274,60 @@ public static class ObservationAdmissionGrantVerifier
         DateTimeOffset? now = null)
     {
         ArgumentNullException.ThrowIfNull(expected);
+        Claims claims = VerifySignedClaims(token, serverPublicKeyHex, now, out _);
+        if (!IsValidEndpointClaims(claims, expected))
+        {
+            throw InvalidGrant();
+        }
+        return new VerifiedObservationAdmissionGrant(claims);
+    }
+
+    /// <summary>
+    /// Verify signature, canonical encoding, freshness, and exact Manager
+    /// session binding. Unlike <see cref="Verify"/>, this takes no expected
+    /// endpoint identity; endpoint key, session, and epoch are accepted only
+    /// as signed claims returned in the verified grant.
+    /// </summary>
+    public static VerifiedObservationAdmissionGrant VerifyForManager(
+        string token,
+        string serverPublicKeyHex,
+        ObservationAdmissionManager expected,
+        DateTimeOffset? now = null)
+    {
+        ArgumentNullException.ThrowIfNull(expected);
+        if (expected.DeploymentId is null ||
+            expected.AccountId is null ||
+            expected.ComputerId is null ||
+            expected.ManagerId is null ||
+            expected.ManagerPublicKeyHex is null ||
+            !IsCanonicalDeploymentId(expected.DeploymentId) ||
+            !IsCanonicalUuid(expected.AccountId) ||
+            !IsCanonicalUuid(expected.ComputerId) ||
+            !IsCanonicalUuid(expected.ManagerId) ||
+            !IsLowerHex(expected.ManagerPublicKeyHex, 32))
+        {
+            throw InvalidGrant();
+        }
+
+        Claims claims = VerifySignedClaims(token, serverPublicKeyHex, now, out _);
+        if (!IsValidManagerClaims(claims, expected))
+        {
+            throw InvalidGrant();
+        }
+        return new VerifiedObservationAdmissionGrant(claims);
+    }
+
+    /// <summary>
+    /// Verify the domain-separated signature, canonical token shape, and
+    /// claims common to every verifier. Callers then apply endpoint or
+    /// Manager-specific binding checks.
+    /// </summary>
+    private static Claims VerifySignedClaims(
+        string token,
+        string serverPublicKeyHex,
+        DateTimeOffset? now,
+        out long nowUnix)
+    {
         ArgumentNullException.ThrowIfNull(token);
         ArgumentNullException.ThrowIfNull(serverPublicKeyHex);
         if (Encoding.UTF8.GetByteCount(token) > MaximumTokenBytes || token.Any(static c => c > 0x7f))
@@ -300,14 +366,14 @@ public static class ObservationAdmissionGrantVerifier
                 throw InvalidGrant();
             }
 
-            long nowUnix = (now ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds();
-            if (!IsValidClaims(claims, expected, nowUnix) ||
+            nowUnix = (now ?? DateTimeOffset.UtcNow).ToUnixTimeSeconds();
+            if (!HasCanonicalClaims(claims, nowUnix) ||
                 !CanonicalPayload(claims).AsSpan().SequenceEqual(payload))
             {
                 throw InvalidGrant();
             }
 
-            return new VerifiedObservationAdmissionGrant(claims);
+            return claims;
         }
         finally
         {
@@ -377,8 +443,8 @@ public static class ObservationAdmissionGrantVerifier
         }
     }
 
-    internal static bool IsLowerHex(string value, int byteCount) =>
-        value.Length == byteCount * 2 && value.All(static c =>
+    internal static bool IsLowerHex(string? value, int byteCount) =>
+        value is not null && value.Length == byteCount * 2 && value.All(static c =>
             c is >= '0' and <= '9' or >= 'a' and <= 'f');
 
     public static bool IsCertificatePem(ReadOnlySpan<byte> certificatePem)
@@ -414,12 +480,9 @@ public static class ObservationAdmissionGrantVerifier
 
     internal static ServerClientException InvalidGrant() => new(
         ServerClientFailure.Unauthorized,
-        "The endpoint observation grant is invalid or expired.");
+        "The observation admission grant is invalid or expired.");
 
-    private static bool IsValidClaims(
-        Claims claims,
-        ObservationAdmissionEndpoint expected,
-        long nowUnix) =>
+    private static bool HasCanonicalClaims(Claims claims, long nowUnix) =>
         claims.Version == 1 &&
         claims.Capability == "observe" &&
         IsCanonicalUuid(claims.GrantId) &&
@@ -434,19 +497,32 @@ public static class ObservationAdmissionGrantVerifier
         claims.IssuedAtUnix <= nowUnix + 5 &&
         claims.ExpiresAtUnix > nowUnix &&
         claims.ExpiresAtUnix > claims.IssuedAtUnix &&
-        claims.IssuedAtUnix >= claims.ExpiresAtUnix - MaximumLifetimeSeconds &&
+        claims.IssuedAtUnix >= claims.ExpiresAtUnix - MaximumLifetimeSeconds;
+
+    private static bool IsValidEndpointClaims(
+        Claims claims,
+        ObservationAdmissionEndpoint expected) =>
         claims.DeploymentId == expected.DeploymentId &&
         claims.ComputerId == expected.ComputerId &&
         claims.EndpointPublicKey == expected.EndpointPublicKeyHex &&
         claims.EndpointSessionId == expected.EndpointSessionId &&
         claims.EnrollmentEpoch == expected.EnrollmentEpoch;
 
-    private static bool IsCanonicalUuid(string value) =>
+    private static bool IsValidManagerClaims(
+        Claims claims,
+        ObservationAdmissionManager expected) =>
+        claims.DeploymentId == expected.DeploymentId &&
+        claims.AccountId == expected.AccountId &&
+        claims.ComputerId == expected.ComputerId &&
+        claims.ManagerId == expected.ManagerId &&
+        claims.ManagerPublicKey == expected.ManagerPublicKeyHex;
+
+    private static bool IsCanonicalUuid(string? value) =>
         Guid.TryParseExact(value, "D", out Guid parsed) &&
         parsed.ToString("D").Equals(value, StringComparison.Ordinal);
 
-    private static bool IsCanonicalDeploymentId(string value) =>
-        value.Length == 36 && value.StartsWith("dep_", StringComparison.Ordinal) &&
+    private static bool IsCanonicalDeploymentId(string? value) =>
+        value is { Length: 36 } && value.StartsWith("dep_", StringComparison.Ordinal) &&
         IsLowerHex(value[4..], 16);
 
     private static byte[] CanonicalPayload(Claims claims)
