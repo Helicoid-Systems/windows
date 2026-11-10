@@ -28,6 +28,8 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
 
     private PendingAuthChallenge? _pending;
     private string? _bearerToken;
+    private string? _sessionAccountId;
+    private string? _sessionManagerId;
     private long _sessionExpiresAtUnix;
     private long _sessionDeadlineTimestamp;
     private int _sessionGeneration;
@@ -150,6 +152,67 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
     public Uri Origin => _transport.Origin;
 
     /// <summary>
+    /// Non-secret signed-in Manager identity for this exact session generation.
+    /// Returns null when no live session is installed. Account and manager IDs
+    /// come only from the validated v2 completion response.
+    /// </summary>
+    internal ObservationManagerSessionIdentity? TryGetObservationSessionIdentity()
+    {
+        if (TryExpireDueSession(out var expiredGeneration))
+        {
+            RaiseSessionExpired(expiredGeneration);
+        }
+
+        lock (_gate)
+        {
+            if (_bearerToken is null
+                || _sessionAccountId is null
+                || _sessionManagerId is null
+                || IsSessionExpiredLocked())
+            {
+                return null;
+            }
+
+            return new ObservationManagerSessionIdentity(
+                _trustedDeploymentId,
+                _sessionAccountId,
+                _sessionManagerId,
+                DeviceKey.PublicKeyHex,
+                _sessionGeneration);
+        }
+    }
+
+    /// <summary>
+    /// Bounded authorized JSON request seam for one-use observation admission.
+    /// Bearer material never leaves this client. The response must still belong
+    /// to the exact session generation that issued the request.
+    /// </summary>
+    internal Task<byte[]> SendAuthorizedJsonAsync(
+        HttpMethod method,
+        string path,
+        string? payload,
+        int expectedStatusCode,
+        int expectedSessionGeneration,
+        CancellationToken cancellationToken)
+    {
+        if (payload is not null && payload.Length > 16 * 1024)
+        {
+            throw new ServerClientException(
+                ServerClientFailure.BadRequest,
+                "The authorized request body exceeded its bound.");
+        }
+
+        return SendJsonAsync(
+            method,
+            path,
+            payload,
+            authorized: true,
+            cancellationToken: cancellationToken,
+            expectedStatusCode: expectedStatusCode,
+            expectedSessionGeneration: expectedSessionGeneration);
+    }
+
+    /// <summary>
     /// Begin a bounded one-use challenge bound to this deployment, the exact
     /// persistent manager key, and operation=service session.
     /// Clears any previous pending challenge and session first.
@@ -178,6 +241,8 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
             previousPending = _pending;
             _pending = null;
             _bearerToken = null;
+            _sessionAccountId = null;
+            _sessionManagerId = null;
             _sessionExpiresAtUnix = 0;
             _sessionDeadlineTimestamp = 0;
             unchecked
@@ -398,7 +463,7 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
                 },
                 JsonOptions);
 
-            var body = await SendJsonAsync(
+            byte[] loginBody = await SendJsonAsync(
                     HttpMethod.Post,
                     "/v2/auth/challenge/complete",
                     payload,
@@ -406,7 +471,10 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            var login = ParseLoginResponse(body);
+            // The login response carries the bearer. Parse and clear the wire
+            // body first; validation and timer setup can then fail without
+            // retaining a token-bearing body.
+            var login = ParseSensitiveResponse(loginBody, ParseLoginResponse);
             // One precise reception sample drives both wall-clock validation and
             // the checked monotonic deadline. Do not round to whole Unix seconds
             // here — the timer due time and enforcement must share one origin.
@@ -443,6 +511,8 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
                 installedGeneration = _sessionGeneration;
                 installedBearer = login.Token;
                 _bearerToken = login.Token;
+                _sessionAccountId = login.Account?.Id;
+                _sessionManagerId = login.Manager?.Id;
                 _sessionExpiresAtUnix = login.ExpiresAtUnix;
                 _sessionDeadlineTimestamp = deadlineTimestamp;
                 _pending = null;
@@ -505,6 +575,8 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
                 if (ReferenceEquals(_pending, pending))
                 {
                     _bearerToken = null;
+                    _sessionAccountId = null;
+                    _sessionManagerId = null;
                     _sessionExpiresAtUnix = 0;
                     _sessionDeadlineTimestamp = 0;
                     unchecked
@@ -596,6 +668,8 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
         lock (_gate)
         {
             _bearerToken = null;
+            _sessionAccountId = null;
+            _sessionManagerId = null;
             _sessionExpiresAtUnix = 0;
             _sessionDeadlineTimestamp = 0;
             unchecked
@@ -770,6 +844,8 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
 
             _disposed = true;
             _bearerToken = null;
+            _sessionAccountId = null;
+            _sessionManagerId = null;
             _sessionExpiresAtUnix = 0;
             _sessionDeadlineTimestamp = 0;
             unchecked
@@ -806,6 +882,26 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
 
     private static LoginResponse ParseLoginResponse(byte[] body) =>
         ParseJson<LoginResponse>(body);
+
+    /// <summary>
+    /// Parse a response that contains credentials or tokens, then zero the
+    /// returned wire buffer whether parsing succeeds or fails. Transport-
+    /// internal buffers and parsed immutable strings remain managed copies and
+    /// are not zeroized.
+    /// </summary>
+    internal static T ParseSensitiveResponse<T>(byte[] body, Func<byte[], T> parse)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(parse);
+        try
+        {
+            return parse(body);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(body);
+        }
+    }
 
     private static T ParseJson<T>(byte[] body)
     {
@@ -1055,10 +1151,13 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
         string path,
         string? payload,
         bool authorized,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int? expectedStatusCode = null,
+        int? expectedSessionGeneration = null)
     {
         string? bearer;
         int requestGeneration;
+        bool requestedSessionIsNotCurrent;
 
         if (authorized && TryExpireDueSession(out var expiredGeneration))
         {
@@ -1069,6 +1168,8 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
         {
             bearer = _bearerToken;
             requestGeneration = _sessionGeneration;
+            requestedSessionIsNotCurrent = expectedSessionGeneration is int expected
+                && requestGeneration != expected;
         }
 
         if (authorized && bearer is null)
@@ -1076,6 +1177,13 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
             throw new ServerClientException(
                 ServerClientFailure.NotConnected,
                 "No active session. Sign in first.");
+        }
+
+        if (authorized && requestedSessionIsNotCurrent)
+        {
+            throw new ServerClientException(
+                ServerClientFailure.Unauthorized,
+                "The requested session is no longer the current Manager session.");
         }
 
         using var content = payload is null
@@ -1090,7 +1198,8 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
                     path,
                     content,
                     cancellationToken,
-                    bearerToken: authorized ? bearer : null)
+                    bearerToken: authorized ? bearer : null,
+                    expectedStatusCode: expectedStatusCode)
                 .ConfigureAwait(false);
         }
         catch (ServerClientException ex) when (authorized && ex.Failure is ServerClientFailure.Unauthorized)
@@ -1105,13 +1214,18 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
             throw;
         }
 
-        // Shared response boundary: a successful authorized body may only leave
-        // this seam when the exact request session is still live. Generation
-        // token identity is not enough — the lease may have expired while the
-        // timer callback was delayed. Expiry is checked against the current
-        // monotonic/UTC deadline. Expire only that installed generation and
-        // never erase a replacement.
-        if (authorized)
+        if (!authorized)
+        {
+            return body;
+        }
+
+        // Shared response boundary: a successful authorized body may only
+        // leave this seam when the exact request session is still live.
+        // Generation token identity is not enough — the lease may have
+        // expired while the timer callback was delayed. Expiry is checked
+        // against the current monotonic/UTC deadline. Expire only that
+        // installed generation and never erase a replacement.
+        return CompleteAuthorizedResponse(body, () =>
         {
             int fenceExpiredGeneration = 0;
             ITimer? fenceTimer = null;
@@ -1125,8 +1239,9 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
                 }
                 else if (IsSessionExpiredLocked())
                 {
-                    // Ownership of the matching timer is returned here and must
-                    // be disposed outside the gate, like every other clear path.
+                    // Ownership of the matching timer is returned here and
+                    // must be disposed outside the gate, like every other
+                    // clear path.
                     fenceTimer = ClearSessionLocked();
                     fenceExpiredGeneration = requestGeneration;
                     reject = true;
@@ -1146,9 +1261,30 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
                     ServerClientFailure.Unauthorized,
                     "The authorized response belongs to a session that is no longer active.");
             }
-        }
+        });
+    }
 
-        return body;
+    /// <summary>
+    /// Deliver an authorized response only when its session fence succeeds.
+    /// The wire body may contain a bearer, grant token, or other secret; zero
+    /// this returned buffer before any exception can leak it to managed
+    /// garbage. Transport-internal buffers and parsed immutable strings are
+    /// separate copies and are not claimed to be cleared here.
+    /// </summary>
+    internal static byte[] CompleteAuthorizedResponse(byte[] body, Action fence)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        ArgumentNullException.ThrowIfNull(fence);
+        try
+        {
+            fence();
+            return body;
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(body);
+            throw;
+        }
     }
 
     /// <summary>
@@ -1476,6 +1612,8 @@ public sealed class V2DeviceKeyChallengeClient : IDisposable
     private ITimer? ClearSessionLocked()
     {
         _bearerToken = null;
+        _sessionAccountId = null;
+        _sessionManagerId = null;
         _sessionExpiresAtUnix = 0;
         _sessionDeadlineTimestamp = 0;
         unchecked

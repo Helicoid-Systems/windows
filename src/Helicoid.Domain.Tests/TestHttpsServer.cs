@@ -107,7 +107,7 @@ internal sealed class TestHttpsServer : IAsyncDisposable
 {
     private readonly List<TcpListener> _listeners = new();
     private readonly X509Certificate2 _certificate;
-    private readonly Func<string, CancellationToken, Task<byte[]>> _responder;
+    private readonly Func<string, byte[], CancellationToken, Task<byte[]>> _responder;
     private readonly CancellationTokenSource _cts = new();
     private readonly List<Task> _handlers = new();
     private readonly List<Exception> _errors = new();
@@ -120,7 +120,7 @@ internal sealed class TestHttpsServer : IAsyncDisposable
     private TestHttpsServer(
         IEnumerable<TcpListener> listeners,
         X509Certificate2 certificate,
-        Func<string, CancellationToken, Task<byte[]>> responder,
+        Func<string, byte[], CancellationToken, Task<byte[]>> responder,
         TaskCompletionSource? allowHandshake)
     {
         _listeners.AddRange(listeners);
@@ -164,14 +164,48 @@ internal sealed class TestHttpsServer : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(serverCertificate);
         ArgumentNullException.ThrowIfNull(responder);
-        return Start(serverCertificate, (head, _) => Task.FromResult(responder(head)), host);
+        return Start(
+            serverCertificate,
+            (head, _, _) => Task.FromResult(responder(head)),
+            host);
     }
 
     public static TestHttpsServer Start(
         X509Certificate2 serverCertificate,
         Func<string, CancellationToken, Task<byte[]>> responder,
         string host = "127.0.0.1")
-        => Start(serverCertificate, responder, host, allowHandshake: null);
+        => Start(
+            serverCertificate,
+            (head, _, token) => responder(head, token),
+            host,
+            allowHandshake: null);
+
+    /// <summary>
+    /// TEST-ONLY: responder also receives the exact request body so tests can
+    /// pin HTTP verb, target, and payload bytes.
+    /// </summary>
+    public static TestHttpsServer StartWithBody(
+        X509Certificate2 serverCertificate,
+        Func<string, byte[], byte[]> responder,
+        string host = "127.0.0.1")
+    {
+        ArgumentNullException.ThrowIfNull(serverCertificate);
+        ArgumentNullException.ThrowIfNull(responder);
+        return Start(
+            serverCertificate,
+            (head, body, _) => Task.FromResult(responder(head, body)),
+            host,
+            allowHandshake: null);
+    }
+
+    /// <summary>
+    /// TEST-ONLY full seam without a handshake gate.
+    /// </summary>
+    public static TestHttpsServer Start(
+        X509Certificate2 serverCertificate,
+        Func<string, byte[], CancellationToken, Task<byte[]>> responder,
+        string host = "127.0.0.1") =>
+        Start(serverCertificate, responder, host, allowHandshake: null);
 
     /// <summary>
     /// TEST-ONLY: when <paramref name="allowHandshake"/> is provided, the server
@@ -181,6 +215,21 @@ internal sealed class TestHttpsServer : IAsyncDisposable
     public static TestHttpsServer Start(
         X509Certificate2 serverCertificate,
         Func<string, CancellationToken, Task<byte[]>> responder,
+        string host,
+        TaskCompletionSource? allowHandshake) =>
+        Start(
+            serverCertificate,
+            (head, _, token) => responder(head, token),
+            host,
+            allowHandshake);
+
+    /// <summary>
+    /// TEST-ONLY full seam: the responder receives the exact request head and
+    /// body bytes. Existing callers keep the head-only overloads above.
+    /// </summary>
+    public static TestHttpsServer Start(
+        X509Certificate2 serverCertificate,
+        Func<string, byte[], CancellationToken, Task<byte[]>> responder,
         string host,
         TaskCompletionSource? allowHandshake)
     {
@@ -293,9 +342,9 @@ internal sealed class TestHttpsServer : IAsyncDisposable
                     return;
                 }
 
-                var head = await ReadRequestHeadAsync(ssl, token).ConfigureAwait(false);
+                (string head, byte[] body) = await ReadRequestAsync(ssl, token).ConfigureAwait(false);
                 Interlocked.Increment(ref _connectionsServed);
-                var payload = await _responder(head, token).ConfigureAwait(false);
+                var payload = await _responder(head, body, token).ConfigureAwait(false);
                 await ssl.WriteAsync(payload, token).ConfigureAwait(false);
                 await ssl.FlushAsync(token).ConfigureAwait(false);
             }
@@ -306,10 +355,14 @@ internal sealed class TestHttpsServer : IAsyncDisposable
         }
     }
 
-    private static async Task<string> ReadRequestHeadAsync(Stream stream, CancellationToken token)
+    private static async Task<(string Head, byte[] Body)> ReadRequestAsync(
+        Stream stream,
+        CancellationToken token)
     {
         var buffer = new byte[8192];
         using var collected = new MemoryStream();
+        int headerEnd = -1;
+        string head = string.Empty;
         while (true)
         {
             var n = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), token)
@@ -321,20 +374,64 @@ internal sealed class TestHttpsServer : IAsyncDisposable
             }
 
             collected.Write(buffer, 0, n);
-            var text = Encoding.ASCII.GetString(collected.ToArray());
-            var headerEnd = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
-            if (headerEnd >= 0)
+            if (headerEnd < 0)
             {
-                return text[..(headerEnd + 4)];
+                var text = Encoding.ASCII.GetString(collected.ToArray());
+                headerEnd = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                if (headerEnd >= 0)
+                {
+                    head = text[..(headerEnd + 4)];
+                }
             }
 
-            if (collected.Length > 64 * 1024)
+            if (headerEnd >= 0)
+            {
+                int contentLength = ParseContentLength(head);
+                long totalNeeded = (long)headerEnd + 4 + contentLength;
+                if (collected.Length >= totalNeeded)
+                {
+                    break;
+                }
+            }
+
+            if (collected.Length > 128 * 1024)
             {
                 break;
             }
         }
 
-        return Encoding.ASCII.GetString(collected.ToArray());
+        byte[] all = collected.ToArray();
+        if (headerEnd < 0)
+        {
+            return (Encoding.ASCII.GetString(all), Array.Empty<byte>());
+        }
+
+        string exactHead = Encoding.ASCII.GetString(all, 0, headerEnd + 4);
+        int bodyOffset = headerEnd + 4;
+        int bodyLength = Math.Max(0, all.Length - bodyOffset);
+        byte[] body = bodyLength == 0
+            ? Array.Empty<byte>()
+            : all[bodyOffset..];
+        return (exactHead, body);
+    }
+
+    private static int ParseContentLength(string head)
+    {
+        foreach (string line in head.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            string value = line["Content-Length:".Length..].Trim();
+            if (int.TryParse(value, out int length) && length is >= 0 and <= 64 * 1024)
+            {
+                return length;
+            }
+        }
+
+        return 0;
     }
 
     private void RecordError(Exception ex)

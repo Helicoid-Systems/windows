@@ -748,6 +748,48 @@ public class V2SessionExpiryTests
     }
 
     [Fact]
+    public async Task AuthorizedResponse_ExpiryAtFence_FailsClosedAfterBodyReception()
+    {
+        using var pki = TestDeploymentPki.Create("HS expiry response fence CA");
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var harness = Start(pki, time, (h, head) =>
+        {
+            if (head.Contains("/complete", StringComparison.Ordinal))
+            {
+                long exp = h.Time.GetUtcNow().ToUnixTimeSeconds() + 2;
+                return TestHttpScripts.Json(
+                    Encoding.UTF8.GetString(LoginJson("tok-fence", exp, "alice", h.Key.PublicKeyHex)));
+            }
+
+            if (head.Contains("/v1/computers", StringComparison.Ordinal))
+            {
+                // The response arrives, then the bounded session expires before
+                // the shared authorized-response fence can deliver its body.
+                h.Time.AdvanceWithoutDispatch(TimeSpan.FromSeconds(3));
+                return TestHttpScripts.Json(
+                    "{\"computers\":[],\"scope_is_explicit\":true,\"max_page_size\":100}");
+            }
+
+            return TestHttpScripts.Json(
+                Encoding.UTF8.GetString(BeginJson("fence-1", "t1", h.Key.PublicKeyHex, NowPlus(90), false)),
+                status: 201);
+        });
+        await using (harness)
+        {
+            var pending = await harness.Client.BeginChallengeAsync(
+                "alice", "pw", CancellationToken.None);
+            await harness.Client.CompleteChallengeAsync(pending, null, CancellationToken.None);
+            Assert.True(harness.Client.HasSession);
+
+            var expired = await Assert.ThrowsAsync<ServerClientException>(
+                () => harness.Client.GetInventoryAsync(CancellationToken.None));
+
+            Assert.Equal(ServerClientFailure.Unauthorized, expired.Failure);
+            Assert.False(harness.Client.HasSession);
+        }
+    }
+
+    [Fact]
     public async Task DelayedExpiryNotification_CannotResetReplacementSignIn()
     {
         using var pki = TestDeploymentPki.Create("HS expiry delayed notify CA");

@@ -242,7 +242,8 @@ public static class ObservationAdmissionGrantVerifier
     private static readonly byte[] Domain = Encoding.UTF8.GetBytes("hs-observation-grant-v1\0");
     private const int MaximumTokenBytes = 8 * 1024;
     private const int MaximumPayloadBytes = 4 * 1024;
-    private const long MaximumLifetimeSeconds = 10;
+    internal const long MaximumLifetimeSeconds = 10;
+    internal const long MaximumClockSkewSeconds = 5;
     private static readonly byte[] WebRtcBindingDomain = Encoding.UTF8.GetBytes("HS-WEBRTC-DTLS-SCTP-V1\0");
     private static readonly byte[] WebRtcProductLabel = Encoding.UTF8.GetBytes("hs-product");
 
@@ -526,7 +527,7 @@ public static class ObservationAdmissionGrantVerifier
         IsLowerHex(claims.ManagerPublicKey, 32) &&
         IsLowerHex(claims.EndpointPublicKey, 32) &&
         claims.EnrollmentEpoch > 0 &&
-        claims.IssuedAtUnix <= nowUnix + 5 &&
+        claims.IssuedAtUnix <= nowUnix + MaximumClockSkewSeconds &&
         claims.ExpiresAtUnix > nowUnix &&
         claims.ExpiresAtUnix > claims.IssuedAtUnix &&
         claims.IssuedAtUnix >= claims.ExpiresAtUnix - MaximumLifetimeSeconds;
@@ -549,11 +550,11 @@ public static class ObservationAdmissionGrantVerifier
         claims.ManagerId == expected.ManagerId &&
         claims.ManagerPublicKey == expected.ManagerPublicKeyHex;
 
-    private static bool IsCanonicalUuid(string? value) =>
+    internal static bool IsCanonicalUuid(string? value) =>
         Guid.TryParseExact(value, "D", out Guid parsed) &&
         parsed.ToString("D").Equals(value, StringComparison.Ordinal);
 
-    private static bool IsCanonicalDeploymentId(string? value) =>
+    internal static bool IsCanonicalDeploymentId(string? value) =>
         value is { Length: 36 } && value.StartsWith("dep_", StringComparison.Ordinal) &&
         IsLowerHex(value[4..], 16);
 
