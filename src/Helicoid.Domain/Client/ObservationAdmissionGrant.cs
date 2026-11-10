@@ -124,16 +124,29 @@ public sealed class VerifiedObservationAdmissionGrant
     /// <summary>
     /// Build the canonical device-key statement for one exact ephemeral DTLS
     /// certificate. The nonce, role, and grant context prevent reuse across
-    /// observations or peer directions.
+    /// observations or peer directions. The grant expiry is checked against
+    /// the live UTC clock; deterministic verification uses the internal
+    /// overload with an explicit instant.
     /// </summary>
     public byte[] CreatePeerCertificateAttestationMessage(
         ReadOnlySpan<byte> certificatePem,
         string endpointNonceHex,
-        ObservationPeerRole role)
+        ObservationPeerRole role) =>
+        CreatePeerCertificateAttestationMessage(
+            certificatePem,
+            endpointNonceHex,
+            role,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+    internal byte[] CreatePeerCertificateAttestationMessage(
+        ReadOnlySpan<byte> certificatePem,
+        string endpointNonceHex,
+        ObservationPeerRole role,
+        long nowUnix)
     {
         ArgumentNullException.ThrowIfNull(endpointNonceHex);
         if (!ObservationAdmissionGrantVerifier.IsLowerHex(endpointNonceHex, 32) ||
-            ExpiresAtUnix <= DateTimeOffset.UtcNow.ToUnixTimeSeconds() ||
+            ExpiresAtUnix <= nowUnix ||
             !ObservationAdmissionGrantVerifier.IsCertificatePem(certificatePem))
         {
             throw ObservationAdmissionGrantVerifier.InvalidGrant();
@@ -158,12 +171,30 @@ public sealed class VerifiedObservationAdmissionGrant
         }
     }
 
-    /// <summary>Verify the endpoint's certificate attestation before pinning its certificate.</summary>
+    /// <summary>
+    /// Verify the endpoint's certificate attestation before pinning its
+    /// certificate. The grant expiry is checked against the live UTC clock;
+    /// deterministic verification uses the internal overload with an explicit
+    /// instant.
+    /// </summary>
     public bool VerifyPeerCertificateAttestation(
         ReadOnlySpan<byte> certificatePem,
         string endpointNonceHex,
         ObservationPeerRole role,
-        string signatureHex)
+        string signatureHex) =>
+        VerifyPeerCertificateAttestation(
+            certificatePem,
+            endpointNonceHex,
+            role,
+            signatureHex,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+    internal bool VerifyPeerCertificateAttestation(
+        ReadOnlySpan<byte> certificatePem,
+        string endpointNonceHex,
+        ObservationPeerRole role,
+        string signatureHex,
+        long nowUnix)
     {
         ArgumentNullException.ThrowIfNull(signatureHex);
         string publicKeyHex = role switch
@@ -181,7 +212,8 @@ public sealed class VerifiedObservationAdmissionGrant
         byte[] signature;
         try
         {
-            message = CreatePeerCertificateAttestationMessage(certificatePem, endpointNonceHex, role);
+            message = CreatePeerCertificateAttestationMessage(
+                certificatePem, endpointNonceHex, role, nowUnix);
             signature = Convert.FromHexString(signatureHex);
         }
         catch (ServerClientException)
