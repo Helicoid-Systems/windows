@@ -477,7 +477,7 @@ public sealed class ObservationManagerAdmissionGrantTests
             grant, certificate, nonce, managerKey, HistoricalUnix);
         string uppercaseSignature = UppercaseFirstHexLetter(validSignature);
         Assert.Equal(validSignature.Length, uppercaseSignature.Length);
-        Assert.True(uppercaseSignature.Any(static character => character is >= 'A' and <= 'F'));
+        Assert.Contains(uppercaseSignature, static character => character is >= 'A' and <= 'F');
 
         var cases = new (string Name, string Signature)[]
         {
